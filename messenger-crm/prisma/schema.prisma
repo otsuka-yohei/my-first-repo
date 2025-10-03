@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  WORKER
+  MANAGER
+  AREA_MANAGER
+  SYSTEM_ADMIN
+}
+
+enum MembershipRole {
+  MEMBER
+  MANAGER
+}
+
+enum ConversationStatus {
+  ACTIVE
+  CLOSED
+  ESCALATED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+}
+
+enum CaseStatus {
+  IN_PROGRESS
+  RESOLVED
+  ESCALATED
+  ON_HOLD
+}
+
+enum CasePriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model User {
+  id            String            @id @default(cuid())
+  email         String            @unique
+  passwordHash  String
+  name          String
+  role          UserRole
+  locale        String            @default("ja-JP")
+  avatarUrl     String?
+  timeZone      String?           @default("Asia/Tokyo")
+  memberships   GroupMembership[]
+  conversations Conversation[]    @relation("ConversationOwner")
+  messages      Message[]
+  auditLogs     AuditLog[]        @relation("AuditActor")
+  accounts      Account[]
+  sessions      Session[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  groups      Group[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Group {
+  id             String            @id @default(cuid())
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  organizationId String
+  name           String
+  description    String?
+  memberships    GroupMembership[]
+  conversations  Conversation[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([organizationId, name])
+}
+
+model GroupMembership {
+  id        String         @id @default(cuid())
+  group     Group          @relation(fields: [groupId], references: [id])
+  groupId   String
+  user      User           @relation(fields: [userId], references: [id])
+  userId    String
+  role      MembershipRole
+  createdAt DateTime       @default(now())
+
+  @@unique([groupId, userId])
+}
+
+model Conversation {
+  id           String             @id @default(cuid())
+  group        Group              @relation(fields: [groupId], references: [id])
+  groupId      String
+  worker       User               @relation("ConversationOwner", fields: [workerId], references: [id])
+  workerId     String
+  subject      String?
+  status       ConversationStatus @default(ACTIVE)
+  messages     Message[]
+  consultation ConsultationCase?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+}
+
+model Message {
+  id             String              @id @default(cuid())
+  conversation   Conversation        @relation(fields: [conversationId], references: [id])
+  conversationId String
+  sender         User                @relation(fields: [senderId], references: [id])
+  senderId       String
+  body           String
+  language       String
+  type           MessageType         @default(TEXT)
+  contentUrl     String?
+  metadata       Json?
+  llmArtifact    MessageLLMArtifact?
+  createdAt      DateTime            @default(now())
+}
+
+model MessageLLMArtifact {
+  id              String   @id @default(cuid())
+  message         Message  @relation(fields: [messageId], references: [id])
+  messageId       String   @unique
+  translation     String?
+  translationLang String?
+  suggestions     Json?
+  sentiment       String?
+  extra           Json?
+  createdAt       DateTime @default(now())
+}
+
+model ConsultationCase {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  conversationId String       @unique
+  summary        String?
+  category       String
+  description    String?
+  status         CaseStatus   @default(IN_PROGRESS)
+  priority       CasePriority @default(MEDIUM)
+  closedAt       DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String
+  changes    Json?
+  createdAt  DateTime @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
