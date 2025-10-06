@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { signOut, useSession } from "next-auth/react"
+import { useSession } from "next-auth/react"
+import { useFormStatus } from "react-dom"
 
+import { logoutAction } from "@/app/actions/logout"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
@@ -26,20 +27,10 @@ const ROLE_LABEL: Record<UserRole, string> = {
 
 export function AppHeader({ currentUser }: AppHeaderProps) {
   const { data: session } = useSession()
-  const [signingOut, setSigningOut] = useState(false)
 
   const displayName = session?.user?.name ?? currentUser.name ?? "ユーザー"
   const email = session?.user?.email ?? currentUser.email ?? ""
   const role = (session?.user?.role ?? currentUser.role) as UserRole
-
-  async function handleSignOut() {
-    try {
-      setSigningOut(true)
-      await signOut({ redirectTo: "/login" })
-    } finally {
-      setSigningOut(false)
-    }
-  }
 
   return (
     <header className="flex items-center justify-between border-b bg-background px-6 py-4">
@@ -57,10 +48,20 @@ export function AppHeader({ currentUser }: AppHeaderProps) {
           <p className="text-xs text-muted-foreground">ロール</p>
           <p className="font-medium">{ROLE_LABEL[role]}</p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleSignOut} disabled={signingOut}>
-          {signingOut ? "サインアウト中" : "サインアウト"}
-        </Button>
+        <form action={logoutAction} className="inline">
+          <SignOutButton />
+        </form>
       </div>
     </header>
+  )
+}
+
+function SignOutButton() {
+  const { pending } = useFormStatus()
+
+  return (
+    <Button variant="outline" size="sm" type="submit" disabled={pending}>
+      {pending ? "サインアウト中" : "サインアウト"}
+    </Button>
   )
 }

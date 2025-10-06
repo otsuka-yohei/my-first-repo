@@ -1,13 +1,28 @@
-import "server-only"
-
 import { z } from "zod"
+
+const optionalString = z
+  .string()
+  .optional()
+  .transform((val) => {
+    if (!val) {
+      return undefined
+    }
+    const trimmed = val.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  })
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]),
   DATABASE_URL: z.string().url(),
   NEXTAUTH_SECRET: z.string().min(1),
-  NEXTAUTH_URL: z.string().url().optional(),
-  OPENAI_API_KEY: z.string().min(1).optional(),
+  NEXTAUTH_URL: z.preprocess((val) => {
+    if (typeof val !== "string") return val
+    const trimmed = val.trim()
+    return trimmed.length === 0 ? undefined : trimmed
+  }, z.string().url().optional()),
+  OPENAI_API_KEY: optionalString,
+  GOOGLE_TRANSLATE_API_KEY: optionalString,
+  GOOGLE_SUGGEST_API_KEY: optionalString,
 })
 
 const rawEnv = {
@@ -16,6 +31,8 @@ const rawEnv = {
   NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET,
   NEXTAUTH_URL: process.env.NEXTAUTH_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  GOOGLE_TRANSLATE_API_KEY: process.env.GOOGLE_TRANSLATE_API_KEY,
+  GOOGLE_SUGGEST_API_KEY: process.env.GOOGLE_SUGGEST_API_KEY,
 }
 
 const parsed = envSchema.safeParse(rawEnv)

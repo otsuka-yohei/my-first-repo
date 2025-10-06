@@ -1,13 +1,18 @@
 import "server-only"
 
-import OpenAI from "openai"
+import { GoogleGenerativeAI } from "@google/generative-ai"
 
 import { env } from "@/server/env"
 
-const DEFAULT_MODEL = "gpt-4o-mini"
+const TRANSLATE_MODEL = "gemini-1.5-flash"
+const SUGGEST_MODEL = "gemini-1.5-flash"
 
-const openaiClient = env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: env.OPENAI_API_KEY })
+const translateModel = env.GOOGLE_TRANSLATE_API_KEY
+  ? new GoogleGenerativeAI(env.GOOGLE_TRANSLATE_API_KEY).getGenerativeModel({ model: TRANSLATE_MODEL })
+  : null
+
+const suggestModel = env.GOOGLE_SUGGEST_API_KEY
+  ? new GoogleGenerativeAI(env.GOOGLE_SUGGEST_API_KEY).getGenerativeModel({ model: SUGGEST_MODEL })
   : null
 
 export interface TranslationRequest {
@@ -40,52 +45,66 @@ export interface EnrichmentResult {
   suggestions?: SuggestedReply[]
 }
 
+async function safeGenerateText(model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]> | null, prompt: string) {
+  if (!model) {
+    return null
+  }
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error("[llm] generation failed", error)
+    return null
+  }
+}
+
 export async function translateMessage(
   request: TranslationRequest,
 ): Promise<TranslationResult> {
-  if (!openaiClient) {
+  const prompt = `Translate the following message from ${request.sourceLanguage} to ${request.targetLanguage}.\nMessage:\n${request.content}`
+  const output = await safeGenerateText(translateModel, prompt)
+
+  if (!output) {
     return {
       translation: request.content,
-      provider: "mock",
-      model: "offline",
-      warnings: ["OPENAI_API_KEY not set; returning original content"],
+      provider: translateModel ? "google-ai-studio" : "mock",
+      model: translateModel ? TRANSLATE_MODEL : "offline",
+      warnings: translateModel
+        ? ["Translation request failed; returning original content."]
+        : ["GOOGLE_TRANSLATE_API_KEY not set; returning original content"],
     }
   }
 
-  const response = await openaiClient.responses.create({
-    model: DEFAULT_MODEL,
-    input: `Translate the following message from ${request.sourceLanguage} to ${request.targetLanguage}.\nMessage:\n${request.content}`,
-  })
-
-  const translation = response.output_text?.trim() ?? request.content
-
   return {
-    translation,
-    provider: "openai",
-    model: DEFAULT_MODEL,
+    translation: output,
+    provider: "google-ai-studio",
+    model: TRANSLATE_MODEL,
   }
 }
 
 export async function generateSuggestedReplies(
   request: SuggestionRequest,
 ): Promise<SuggestedReply[]> {
-  if (!openaiClient) {
-    return [
-      {
-        content: "LLM が無効のため、ここに提案が表示されます。",
-        tone: "solution",
-        language: request.language,
-      },
-    ]
+  const prompt =
+    `You are an empathetic support ${request.persona}. Based on the following customer transcript, ` +
+    `suggest up to three concise replies in ${request.language}. ` +
+    `Return each reply on its own line, prefixed by the tone (question/empathy/solution) followed by a colon.\nTranscript:\n${request.transcript}`
+
+  const output = await safeGenerateText(suggestModel, prompt)
+
+  if (!output) {
+    if (!suggestModel) {
+      return [
+        {
+          content: "LLM が無効のため、ここに提案が表示されます。",
+          tone: "solution",
+          language: request.language,
+        },
+      ]
+    }
+    return []
   }
-
-  const response = await openaiClient.responses.create({
-    model: DEFAULT_MODEL,
-    input: `You are an empathetic support agent. Based on the following customer transcript, suggest up to three short replies in ${request.language}.\n` +
-      `Return them as bullet points prefixed with the tone (question/empathy/solution).\nTranscript:\n${request.transcript}`,
-  })
-
-  const output = response.output_text?.trim() ?? ""
 
   return output
     .split("\n")
@@ -93,11 +112,14 @@ export async function generateSuggestedReplies(
     .filter(Boolean)
     .map((line) => {
       const [toneLabel, ...rest] = line.split(":")
-      const tone = toneLabel?.toLowerCase() as SuggestedReply["tone"] | undefined
+      const toneCandidate = toneLabel?.trim().toLowerCase() as SuggestedReply["tone"] | undefined
+      const tone: SuggestedReply["tone"] = toneCandidate && ["question", "empathy", "solution"].includes(toneCandidate)
+        ? toneCandidate
+        : "solution"
       const content = rest.join(":").trim() || line
       return {
         content,
-        tone: tone && ["question", "empathy", "solution"].includes(tone) ? tone : "solution",
+        tone,
         language: request.language,
       }
     })

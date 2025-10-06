@@ -70,7 +70,7 @@ export default async function HomePage() {
   }))
 
   return (
-    <main className="min-h-screen bg-muted/20">
+    <main className="flex min-h-screen flex-col bg-muted/20">
       <AppHeader
         currentUser={{
           id: session.user.id,

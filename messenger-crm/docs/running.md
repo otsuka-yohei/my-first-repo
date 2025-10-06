@@ -15,7 +15,8 @@ npm install
 `.env` には以下が定義済みです（必要に応じて書き換えてください）。
 - `DATABASE_URL` … ローカル PostgreSQL への接続文字列。
 - `NEXTAUTH_SECRET` … 任意のランダム文字列に置き換え推奨。
-- `OPENAI_API_KEY` … LLM 接続を行う場合に設定。テスト時はダミーでも可。
+- `GOOGLE_TRANSLATE_API_KEY` / `GOOGLE_SUGGEST_API_KEY` … Google AI Studio (Gemini) 用の API キー。
+- `OPENAI_API_KEY` … フォールバック用（未使用の場合は空で問題ありません）。
 
 ## 3. データベースの起動
 ```bash

@@ -1,4 +1,4 @@
-import { UserRole } from "@prisma/client"
+import { MembershipRole, UserRole } from "@prisma/client"
 
 import { prisma } from "@/server/db"
 
@@ -33,29 +33,53 @@ export async function listGroupsForUser(user: SessionUser) {
 
 export async function listWorkersForConversationCreation(user: SessionUser) {
   if (user.role === UserRole.WORKER) {
-    const [record, memberships] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: user.id },
-        select: { id: true, name: true, email: true },
-      }),
-      prisma.groupMembership.findMany({
-        where: { userId: user.id },
-        select: { groupId: true },
-      }),
-    ])
+    const memberships = await prisma.groupMembership.findMany({
+      where: { userId: user.id },
+      select: { groupId: true },
+    })
 
-    if (!record) {
+    const groupIds = memberships.map((membership) => membership.groupId)
+    if (!groupIds.length) {
       return []
     }
 
-    return [
-      {
-        id: record.id,
-        name: record.name,
-        email: record.email,
-        groupIds: memberships.map((membership) => membership.groupId),
+    const managerMemberships = await prisma.groupMembership.findMany({
+      where: {
+        groupId: { in: groupIds },
+        role: MembershipRole.MANAGER,
       },
-    ]
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    })
+
+    const aggregate = new Map<
+      string,
+      { id: string; name: string | null; email: string | null; groupIds: Set<string> }
+    >()
+
+    for (const membership of managerMemberships) {
+      const existing = aggregate.get(membership.userId)
+      if (existing) {
+        existing.groupIds.add(membership.groupId)
+      } else {
+        aggregate.set(membership.userId, {
+          id: membership.user.id,
+          name: membership.user.name,
+          email: membership.user.email,
+          groupIds: new Set([membership.groupId]),
+        })
+      }
+    }
+
+    return Array.from(aggregate.values())
+      .map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        email: entry.email,
+        groupIds: Array.from(entry.groupIds),
+      }))
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))
   }
 
   let groupIds: string[] | undefined
