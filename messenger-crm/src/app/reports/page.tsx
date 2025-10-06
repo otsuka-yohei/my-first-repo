@@ -1,0 +1,16 @@
+import type { Metadata } from "next"
+
+export const metadata: Metadata = {
+  title: "レポート",
+}
+
+export default function ReportsPage() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-muted/20 p-10">
+      <div className="rounded-2xl border bg-white p-10 shadow">
+        <h1 className="text-xl font-semibold">レポート</h1>
+        <p className="mt-4 text-sm text-muted-foreground">この画面は準備中です。</p>
+      </div>
+    </main>
+  )
+}
