@@ -10,13 +10,7 @@ import {
   Users,
 } from "lucide-react"
 
-const NAV_ITEMS = [
-  { id: "chat", icon: MessageSquare, label: "相談" },
-  { id: "members", icon: Users, label: "顧客" },
-  { id: "reports", icon: BarChart3, label: "レポート" },
-  { id: "settings", icon: Settings, label: "設定" },
-]
-
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,25 +18,26 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
+import type { CasePriority, CaseStatus } from "@prisma/client"
 
-import type { CasePriority } from "@prisma/client"
+const NAV_ITEMS = [
+  { id: "chat", icon: MessageSquare, label: "相談" },
+  { id: "members", icon: Users, label: "顧客" },
+  { id: "reports", icon: BarChart3, label: "レポート" },
+  { id: "settings", icon: Settings, label: "設定" },
+]
 
-// Extend CaseStatus to include 'PENDING'
-type CaseStatus = "IN_PROGRESS" | "RESOLVED" | "PENDING" | "CLOSED"
-
-// CasePriority enum に対応する日本語ラベル
 const CASE_PRIORITY_LABEL: Record<CasePriority, string> = {
   HIGH: "高",
   MEDIUM: "中",
   LOW: "低",
 }
 
-// CaseStatus enum に対応する日本語ラベル
 const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
   IN_PROGRESS: "対応中",
   RESOLVED: "解決済み",
-  PENDING: "保留",
-  CLOSED: "終了",
+  ESCALATED: "エスカレーション",
+  ON_HOLD: "保留",
 }
 
 type UserRole = "WORKER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
@@ -126,11 +121,12 @@ export function ChatDashboard(props: ChatDashboardProps) {
   if (props.currentUser.role === "WORKER") {
     return <WorkerChatDashboard {...props} />
   }
-
   return <ManagerChatDashboard {...props} />
 }
 
-// -------------------- Worker view --------------------
+// -----------------------------------------------------------------------------
+// Worker view
+// -----------------------------------------------------------------------------
 
 function WorkerChatDashboard({
   initialConversations,
@@ -141,7 +137,8 @@ function WorkerChatDashboard({
     () => availableWorkers.filter((worker) => worker.id !== currentUser.id),
     [availableWorkers, currentUser.id],
   )
-  const [conversationSummaries, setConversationSummaries] = useState(initialConversations)
+
+  const [conversations, setConversations] = useState(initialConversations)
   const [selectedManagerId, setSelectedManagerId] = useState<string | null>(null)
   const [selectedManager, setSelectedManager] = useState<WorkerOption | null>(null)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
@@ -153,10 +150,10 @@ function WorkerChatDashboard({
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
-  const messagesContainerRef = useRef<HTMLDivElement | null>(null)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    setConversationSummaries(initialConversations)
+    setConversations(initialConversations)
   }, [initialConversations])
 
   useEffect(() => {
@@ -167,7 +164,6 @@ function WorkerChatDashboard({
       setMessages([])
       return
     }
-
     if (!selectedManagerId) {
       void handleSelectManager(managerOptions[0])
     }
@@ -176,8 +172,8 @@ function WorkerChatDashboard({
 
   useEffect(() => {
     if (!selectedConversationId) {
-      setMessages([])
       setConversationDetail(null)
+      setMessages([])
       return
     }
 
@@ -205,17 +201,16 @@ function WorkerChatDashboard({
         setMessages(conversation.messages ?? [])
 
         const lastMessage = conversation.messages?.[conversation.messages.length - 1] ?? null
-
-        setConversationSummaries((current) =>
+        setConversations((current) =>
           current.map((item) =>
             item.id === conversation.id
               ? {
                   ...item,
                   subject: conversation.subject,
                   status: conversation.status,
-                  updatedAt: item.updatedAt.toString(),
                   consultation: conversation.consultation ?? item.consultation,
                   lastMessage,
+                  updatedAt: conversation.updatedAt.toString(),
                 }
               : item,
           ),
@@ -241,11 +236,11 @@ function WorkerChatDashboard({
   }, [selectedConversationId])
 
   useEffect(() => {
-    const container = messagesContainerRef.current
+    const container = messagesRef.current
     if (container) {
       container.scrollTop = container.scrollHeight
     }
-  }, [messages, selectedManagerId])
+  }, [messages, selectedConversationId])
 
   const filteredManagers = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
@@ -256,20 +251,20 @@ function WorkerChatDashboard({
     })
   }, [managerOptions, searchTerm])
 
-  const displayMessages = useMemo(() => {
-    if (!selectedManagerId) return []
-    return messages.filter(
-      (message) =>
-        message.sender.id === currentUser.id ||
-        (message.sender.id === selectedManagerId && message.sender.role !== "WORKER"),
-    )
-  }, [messages, selectedManagerId, currentUser.id])
+  function lastMessagePreview(manager: WorkerOption) {
+    const summary = conversations.find((item) => manager.groupIds.includes(item.group.id))
+    if (!summary?.lastMessage) return "メッセージなし"
+    return summary.lastMessage.body.slice(0, 40)
+  }
+
+  function lastMessageTime(manager: WorkerOption) {
+    const summary = conversations.find((item) => manager.groupIds.includes(item.group.id))
+    if (!summary) return "--"
+    return formatRelativeTime(summary.updatedAt)
+  }
 
   async function ensureConversation(manager: WorkerOption) {
-    const existing = conversationSummaries.find((conversation) =>
-      manager.groupIds.includes(conversation.group.id),
-    )
-
+    const existing = conversations.find((conversation) => manager.groupIds.includes(conversation.group.id))
     if (existing) {
       return existing
     }
@@ -301,10 +296,10 @@ function WorkerChatDashboard({
         summary: ConversationSummary
       }
 
-      setConversationSummaries((current) => [data.summary, ...current])
+      setConversations((current) => [data.summary, ...current])
       return data.summary
-    } catch (error) {
-      console.error(error)
+    } catch (err) {
+      console.error(err)
       setError("相談スレッドの作成に失敗しました。")
       return null
     }
@@ -318,8 +313,6 @@ function WorkerChatDashboard({
     const summary = await ensureConversation(manager)
     if (!summary) {
       setSelectedConversationId(null)
-      setMessages([])
-      setConversationDetail(null)
       return
     }
 
@@ -353,7 +346,7 @@ function WorkerChatDashboard({
       const data = (await res.json()) as { message: MessageItem }
       setMessages((current) => [...current, data.message])
       setComposer("")
-      setConversationSummaries((current) =>
+      setConversations((current) =>
         current.map((conversation) =>
           conversation.id === selectedConversationId
             ? {
@@ -372,15 +365,9 @@ function WorkerChatDashboard({
     }
   }
 
-  function lastMessagePreview(manager: WorkerOption) {
-    const summary = conversationSummaries.find((item) => manager.groupIds.includes(item.group.id))
-    if (!summary?.lastMessage) return "メッセージなし"
-    return summary.lastMessage.body.slice(0, 40)
-  }
-
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-1 overflow-hidden bg-slate-100">
-      <div className="w-full max-w-[320px] border-r bg-white">
+      <div className="flex w-full max-w-[320px] flex-col border-r bg-white">
         <div className="px-4 pb-4 pt-6">
           <p className="text-lg font-semibold">担当者一覧</p>
           <Input
@@ -396,20 +383,27 @@ function WorkerChatDashboard({
           ) : (
             filteredManagers.map((manager) => {
               const isActive = manager.id === selectedManagerId
-              const preview = lastMessagePreview(manager)
               return (
                 <button
                   key={manager.id}
                   type="button"
                   onClick={() => handleSelectManager(manager)}
-                  className={`w-full rounded-xl border bg-white p-4 text-left shadow-sm transition ${
+                  className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition ${
                     isActive ? "border-[#0F2C82] shadow-md" : "border-transparent hover:border-slate-200"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold">{manager.name ?? manager.email ?? "担当者"}</p>
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarFallback>{getInitials(manager.name || manager.email)}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">{manager.name ?? manager.email ?? "担当者"}</p>
+                        <span className="text-xs text-muted-foreground">{lastMessageTime(manager)}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{lastMessagePreview(manager)}</p>
+                    </div>
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{preview}</p>
                 </button>
               )
             })
@@ -419,25 +413,25 @@ function WorkerChatDashboard({
 
       <div className="flex flex-1 flex-col">
         {selectedManager && selectedConversationId ? (
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b bg-white px-6 py-4">
+          <div className="flex h-full flex-col bg-white">
+            <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
                 <p className="text-lg font-semibold">{selectedManager.name ?? selectedManager.email}</p>
                 <p className="text-xs text-muted-foreground">所属グループ: {conversationDetail?.group.name ?? "-"}</p>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto bg-slate-50 px-6 py-6" ref={messagesContainerRef}>
+            <div ref={messagesRef} className="flex-1 overflow-y-auto bg-slate-50 px-6 py-6">
               {loading ? (
                 <p className="text-sm text-muted-foreground">読み込み中...</p>
               ) : error ? (
                 <p className="text-sm text-destructive">{error}</p>
-              ) : displayMessages.length === 0 ? (
-                <div className="flex h-full flex-1 flex-col items-center justify-center text-muted-foreground">
+              ) : messages.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
                   <MessageSquare className="mb-3 h-10 w-10" />
                   <p className="text-sm">メッセージはまだありません。</p>
                 </div>
               ) : (
-                displayMessages.map((message) => {
+                messages.map((message) => {
                   const isWorker = message.sender.role === "WORKER"
                   return (
                     <div key={message.id} className={`flex ${isWorker ? "justify-end" : "justify-start"}`}>
@@ -494,7 +488,9 @@ function WorkerChatDashboard({
   )
 }
 
-// -------------------- Manager / Admin view --------------------
+// -----------------------------------------------------------------------------
+// Manager / Admin view
+// -----------------------------------------------------------------------------
 
 function ManagerChatDashboard({
   initialConversations,
@@ -517,6 +513,7 @@ function ManagerChatDashboard({
   const [composer, setComposer] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createGroupId, setCreateGroupId] = useState<string>(() => availableGroups[0]?.id ?? "")
@@ -597,7 +594,6 @@ function ManagerChatDashboard({
         setMessages(conversation.messages ?? [])
 
         const lastMessage = conversation.messages?.[conversation.messages.length - 1] ?? null
-
         setConversations((current) =>
           current.map((item) =>
             item.id === conversation.id
@@ -605,9 +601,9 @@ function ManagerChatDashboard({
                   ...item,
                   subject: conversation.subject,
                   status: conversation.status,
-                  updatedAt: item.updatedAt.toString(),
                   consultation: conversation.consultation ?? item.consultation,
                   lastMessage,
+                  updatedAt: conversation.updatedAt.toString(),
                 }
               : item,
           ),
@@ -631,6 +627,13 @@ function ManagerChatDashboard({
       cancelled = true
     }
   }, [selectedConversationId])
+
+  useEffect(() => {
+    const container = messagesRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
+  }, [messages, selectedConversationId])
 
   const filteredConversations = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
@@ -928,36 +931,40 @@ function ManagerChatDashboard({
                     key={conversation.id}
                     type="button"
                     onClick={() => setSelectedConversationId(conversation.id)}
-                    className={`w-full rounded-lg border bg-white p-4 text-left shadow-sm transition ${
+                    className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition ${
                       isActive ? "border-[#0F2C82] shadow-md" : "border-transparent hover:border-slate-200"
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-semibold">{conversation.worker?.name ?? "相談"}</p>
-                        <p className="text-xs text-muted-foreground">{conversation.subject ?? "件名なし"}</p>
+                    <div className="flex items-start gap-3">
+                      <Avatar className="h-10 w-10">
+                        <AvatarFallback>{getInitials(conversation.worker?.name)}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">{conversation.worker?.name ?? "相談"}</p>
+                          <span className="text-xs text-muted-foreground">
+                            {formatRelativeTime(conversation.updatedAt)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {conversation.subject ?? "件名なし"}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Badge variant="outline">{conversation.group.name}</Badge>
+                          {conversation.consultation ? (
+                            <Badge variant="secondary">{conversation.consultation.category}</Badge>
+                          ) : null}
+                          {conversation.consultation ? (
+                            <Badge className="bg-red-100 text-red-700">
+                              {CASE_PRIORITY_LABEL[conversation.consultation.priority]}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {conversation.lastMessage?.body?.slice(0, 60) ?? "メッセージなし"}
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(conversation.updatedAt).toLocaleTimeString("ja-JP", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <Badge variant="outline">{conversation.group.name}</Badge>
-                      {conversation.consultation ? (
-                        <Badge variant="secondary">{conversation.consultation.category}</Badge>
-                      ) : null}
-                      {conversation.consultation ? (
-                        <Badge className="bg-red-100 text-red-700">
-                          {CASE_PRIORITY_LABEL[conversation.consultation.priority]}
-                        </Badge>
-                      ) : null}
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {conversation.lastMessage?.body?.slice(0, 60) ?? "メッセージなし"}
-                    </p>
                   </button>
                 )
               })
@@ -966,21 +973,23 @@ function ManagerChatDashboard({
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          {view === "chat" ? (
-            <ChatView
-              conversation={selectedConversation}
-              messages={messages}
-              loadingMessages={loadingMessages}
-              loadingError={loadingError}
-              composer={composer}
-              onComposerChange={setComposer}
-              onSend={handleSendMessage}
-              sending={sending}
-              sendError={sendError}
-              suggestions={suggestionItems}
-              consultation={consultation}
-            />
-          ) : (
+          <ChatView
+            conversation={selectedConversation}
+            messages={messages}
+            loadingMessages={loadingMessages}
+            loadingError={loadingError}
+            composer={composer}
+            onComposerChange={setComposer}
+            onSend={handleSendMessage}
+            sending={sending}
+            sendError={sendError}
+            suggestions={suggestionItems}
+            consultation={consultation}
+            messagesRef={messagesRef}
+            showSidePanel
+          />
+
+          {view === "reports" ? (
             <ReportView
               conversations={filteredConversations}
               selectedConversation={selectedConversation}
@@ -988,12 +997,16 @@ function ManagerChatDashboard({
               stats={stats}
               consultation={consultation}
             />
-          )}
+          ) : null}
         </div>
       </section>
     </div>
   )
 }
+
+// -----------------------------------------------------------------------------
+// Shared presentation components
+// -----------------------------------------------------------------------------
 
 function ChatView(props: {
   conversation: (ConversationDetail & { messages: MessageItem[] }) | null
@@ -1007,6 +1020,8 @@ function ChatView(props: {
   sendError: string | null
   suggestions: Array<{ content: string; tone?: string; language?: string }>
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
+  messagesRef?: React.RefObject<HTMLDivElement>
+  showSidePanel?: boolean
 }) {
   const {
     conversation,
@@ -1020,21 +1035,32 @@ function ChatView(props: {
     sendError,
     suggestions,
     consultation,
+    messagesRef,
+    showSidePanel = true,
   } = props
 
+  const internalRef = useRef<HTMLDivElement | null>(null)
+  const mergedRef = messagesRef ?? internalRef
+
+  useEffect(() => {
+    const container = mergedRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
+  }, [mergedRef, messages, conversation?.id])
+
   return (
-    <div className="flex h-full flex-col lg:flex-row">
-      <div className="flex-1 border-b bg-white lg:border-r">
+    <div className={`flex h-full flex-1 flex-col ${showSidePanel ? "lg:flex-row" : ""}`}>
+      <div className="flex flex-1 flex-col border-b bg-white lg:border-r">
         {conversation ? (
-          <div className="flex h-full flex-col">
+          <>
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
                 <p className="text-lg font-semibold">{conversation.worker.name ?? "相談"}</p>
                 <p className="text-xs text-muted-foreground">{conversation.subject ?? "件名なし"}</p>
               </div>
             </div>
-
-            <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
+            <div ref={mergedRef} className="flex-1 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
               {loadingMessages ? (
                 <p className="text-sm text-muted-foreground">読み込み中...</p>
               ) : loadingError ? (
@@ -1072,7 +1098,6 @@ function ChatView(props: {
                 })
               )}
             </div>
-
             <div className="border-t bg-white px-6 py-4">
               <form onSubmit={onSend} className="space-y-3">
                 <Textarea
@@ -1089,7 +1114,7 @@ function ChatView(props: {
                 </div>
               </form>
             </div>
-          </div>
+          </>
         ) : (
           <div className="flex h-full items-center justify-center bg-slate-50">
             <div className="text-center text-muted-foreground">
@@ -1100,69 +1125,71 @@ function ChatView(props: {
         )}
       </div>
 
-      <div className="hidden w-full flex-col gap-4 border-l bg-white p-6 lg:flex lg:w-[320px] xl:w-[360px]">
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">AI提案返信</h2>
-            <Button variant="ghost" size="sm">
-              再生成
-            </Button>
-          </div>
-          <div className="space-y-3">
-            {suggestions.length === 0 ? (
-              <p className="text-xs text-muted-foreground">AI提案はまだありません。</p>
-            ) : (
-              suggestions.map((suggestion, index) => (
-                <Card key={`${suggestion.content}-${index}`} className="border-slate-200">
-                  <CardContent className="space-y-2 p-3">
-                    {suggestion.tone ? (
-                      <Badge variant="secondary" className="w-fit capitalize">
-                        {suggestion.tone}
-                      </Badge>
-                    ) : null}
-                    <p className="text-sm leading-relaxed">{suggestion.content}</p>
-                  </CardContent>
-                </Card>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section>
-          <h2 className="mb-3 text-sm font-semibold">相談者情報</h2>
-          {conversation ? (
-            <div className="space-y-3 text-sm">
-              <div>
-                <p className="font-semibold">{conversation.worker.name}</p>
-                <p className="text-xs text-muted-foreground">{conversation.group.name}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">{conversation.status}</Badge>
-                {consultation ? (
-                  <Badge variant="secondary">{consultation.category}</Badge>
-                ) : null}
-                {consultation ? (
-                  <Badge className="bg-red-100 text-red-700">
-                    {CASE_PRIORITY_LABEL[consultation.priority]}
-                  </Badge>
-                ) : null}
-              </div>
-              {consultation?.summary ? (
-                <div className="rounded-md bg-slate-100 p-3 text-xs text-slate-600">
-                  {consultation.summary}
-                </div>
-              ) : null}
-              {consultation?.description ? (
-                <div className="rounded-md border border-dashed p-3 text-xs text-slate-600">
-                  {consultation.description}
-                </div>
-              ) : null}
+      {showSidePanel ? (
+        <div className="hidden w-full flex-col gap-4 border-l bg-white p-6 lg:flex lg:w-[320px] xl:w-[360px]">
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">AI提案返信</h2>
+              <Button variant="ghost" size="sm">
+                再生成
+              </Button>
             </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">相談者を選択すると詳細が表示されます。</p>
-          )}
-        </section>
-      </div>
+            <div className="space-y-3">
+              {suggestions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">AI提案はまだありません。</p>
+              ) : (
+                suggestions.map((suggestion, index) => (
+                  <Card key={`${suggestion.content}-${index}`} className="border-slate-200">
+                    <CardContent className="space-y-2 p-3">
+                      {suggestion.tone ? (
+                        <Badge variant="secondary" className="w-fit capitalize">
+                          {suggestion.tone}
+                        </Badge>
+                      ) : null}
+                      <p className="text-sm leading-relaxed">{suggestion.content}</p>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section>
+            <h2 className="mb-3 text-sm font-semibold">相談者情報</h2>
+            {conversation ? (
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="font-semibold">{conversation.worker.name}</p>
+                  <p className="text-xs text-muted-foreground">{conversation.group.name}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">{conversation.status}</Badge>
+                  {consultation ? (
+                    <Badge variant="secondary">{consultation.category}</Badge>
+                  ) : null}
+                  {consultation ? (
+                    <Badge className="bg-red-100 text-red-700">
+                      {CASE_PRIORITY_LABEL[consultation.priority]}
+                    </Badge>
+                  ) : null}
+                </div>
+                {consultation?.summary ? (
+                  <div className="rounded-md bg-slate-100 p-3 text-xs text-slate-600">
+                    {consultation.summary}
+                  </div>
+                ) : null}
+                {consultation?.description ? (
+                  <div className="rounded-md border border-dashed p-3 text-xs text-slate-600">
+                    {consultation.description}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">相談者を選択すると詳細が表示されます。</p>
+            )}
+          </section>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1192,7 +1219,7 @@ function ReportView(props: {
                   key={conversation.id}
                   type="button"
                   onClick={() => onSelect(conversation.id)}
-                  className={`w-full rounded-lg border bg-white p-4 text-left shadow-sm transition ${
+                  className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition ${
                     isActive ? "border-[#0F2C82] shadow-md" : "border-transparent hover:border-slate-200"
                   }`}
                 >
@@ -1308,4 +1335,27 @@ function ReportCard({
       <p className="mt-3 text-xs text-slate-600">{description}</p>
     </div>
   )
+}
+
+function getInitials(name?: string | null) {
+  if (!name) return "--"
+  const parts = name.trim().split(" ")
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase()
+  }
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+function formatRelativeTime(isoString: string) {
+  const target = new Date(isoString)
+  const now = new Date()
+  const diffMs = now.getTime() - target.getTime()
+  const diffMinutes = Math.floor(diffMs / 60000)
+  if (diffMinutes < 1) return "たった今"
+  if (diffMinutes < 60) return `${diffMinutes}分前`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours}時間前`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays}日前`
+  return target.toLocaleDateString("ja-JP", { month: "long", day: "numeric" })
 }
