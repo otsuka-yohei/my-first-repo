@@ -3,14 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { BarChart3, Bot, LogOut, MessageSquare, Settings, Users } from "lucide-react"
+import { BarChart3, Bot, LogOut, MessageSquare, Settings, Users, X } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import type { CasePriority, CaseStatus } from "@prisma/client"
 
@@ -98,12 +97,6 @@ const NAV_ITEMS = [
   { id: "settings", href: "/settings", icon: Settings, label: "設定" },
 ]
 
-const CASE_PRIORITY_LABEL: Record<CasePriority, string> = {
-  HIGH: "緊急",
-  MEDIUM: "中",
-  LOW: "低",
-}
-
 const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
   IN_PROGRESS: "対応中",
   RESOLVED: "解決済み",
@@ -125,7 +118,7 @@ export function ChatDashboard(props: ChatDashboardProps) {
 
 function ManagerChatDashboard({
   initialConversations,
-  availableGroups,
+  availableGroups: _availableGroups,
   availableWorkers,
   currentUser,
 }: ChatDashboardProps) {
@@ -143,42 +136,22 @@ function ManagerChatDashboard({
   const [composer, setComposer] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createGroupId, setCreateGroupId] = useState<string>(() => availableGroups[0]?.id ?? "")
-  const [createWorkerId, setCreateWorkerId] = useState<string>(() => availableWorkers[0]?.id ?? "")
-  const [createSubject, setCreateSubject] = useState("")
-  const [createMessage, setCreateMessage] = useState("")
-  const [createError, setCreateError] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
+  const [removedTags, setRemovedTags] = useState<Record<string, string[]>>({})
+  const [customTags, setCustomTags] = useState<Record<string, string[]>>({})
+  const [tagDraft, setTagDraft] = useState("")
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workerDirectory = useMemo(() => {
+    const map: Record<string, WorkerOption> = {}
+    for (const worker of availableWorkers) {
+      map[worker.id] = worker
+    }
+    return map
+  }, [availableWorkers])
 
   useEffect(() => {
     setConversations(initialConversations)
   }, [initialConversations])
-
-  useEffect(() => {
-    setCreateGroupId((prev) => {
-      if (prev && availableGroups.some((group) => group.id === prev)) {
-        return prev
-      }
-      return availableGroups[0]?.id ?? ""
-    })
-  }, [availableGroups])
-
-  useEffect(() => {
-    setCreateWorkerId((prev) => {
-      if (
-        prev &&
-        availableWorkers.some((worker) => worker.id === prev && (!createGroupId || worker.groupIds.includes(createGroupId)))
-      ) {
-        return prev
-      }
-      const fallback = availableWorkers.find((worker) =>
-        !createGroupId || worker.groupIds.length === 0 ? true : worker.groupIds.includes(createGroupId),
-      )
-      return fallback?.id ?? ""
-    })
-  }, [availableWorkers, createGroupId])
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -246,6 +219,10 @@ function ManagerChatDashboard({
   }, [selectedConversationId])
 
   useEffect(() => {
+    setTagDraft("")
+  }, [selectedConversationId])
+
+  useEffect(() => {
     const container = messagesRef.current
     if (container) {
       container.scrollTop = container.scrollHeight
@@ -281,20 +258,13 @@ function ManagerChatDashboard({
 
   const consultation = selectedConversation?.consultation ?? null
 
-  const stats = useMemo(() => {
-    if (!consultation) {
-      return {
-        total: selectedConversation ? 1 : 0,
-        resolved: selectedConversation && selectedConversation.status === "RESOLVED" ? 1 : 0,
-        unresolved: selectedConversation && selectedConversation.status !== "RESOLVED" ? 1 : 0,
-      }
-    }
-    return {
-      total: 1,
-      resolved: consultation.status === "RESOLVED" ? 1 : 0,
-      unresolved: consultation.status === "RESOLVED" ? 0 : 1,
-    }
-  }, [consultation, selectedConversation])
+  const removedForSelected = selectedConversationId ? removedTags[selectedConversationId] ?? [] : []
+  const customForSelected = selectedConversationId ? customTags[selectedConversationId] ?? [] : []
+
+  const selectedConversationTags = useMemo(() => {
+    if (!selectedConversation) return []
+    return buildConversationTags(selectedConversation, removedForSelected, customForSelected)
+  }, [selectedConversation, removedForSelected, customForSelected])
 
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -342,171 +312,62 @@ function ManagerChatDashboard({
     }
   }
 
-  async function handleCreateConversation(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    const groupId = createGroupId || availableGroups[0]?.id
-    const workerId = currentUser.role === "WORKER" ? currentUser.id : createWorkerId
-
-    if (!groupId || !workerId) {
-      setCreateError("グループまたは参加者を選択してください。")
+  function handleRemoveTag(conversationId: string, tag: ConversationTag) {
+    if (tag.kind === "manual") {
+      setCustomTags((previous) => {
+        const current = previous[conversationId] ?? []
+        if (!current.length) return previous
+        const next = current.filter((item) => item.toLowerCase() !== tag.label.toLowerCase())
+        return { ...previous, [conversationId]: next }
+      })
       return
     }
 
-    setCreating(true)
-    setCreateError(null)
+    setRemovedTags((previous) => {
+      const current = previous[conversationId] ?? []
+      if (current.includes(tag.id)) return previous
+      return { ...previous, [conversationId]: [...current, tag.id] }
+    })
+  }
 
-    try {
-      const payload: {
-        groupId: string
-        workerId: string
-        subject?: string
-        initialMessage?: { body: string; language: string }
-      } = {
-        groupId,
-        workerId,
+  function handleAddCustomTag(conversationId: string, label: string) {
+    const trimmed = label.trim()
+    if (!trimmed) return
+    setCustomTags((previous) => {
+      const current = previous[conversationId] ?? []
+      if (current.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+        return previous
       }
-
-      if (createSubject.trim()) {
-        payload.subject = createSubject.trim()
-      }
-
-      if (createMessage.trim()) {
-        payload.initialMessage = {
-          body: createMessage.trim(),
-          language: currentUser.role === "WORKER" ? "vi" : "ja",
-        }
-      }
-
-      const res = await fetch("/api/conversations", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      })
-
-      if (!res.ok) {
-        throw new Error("failed to create conversation")
-      }
-
-      const data = (await res.json()) as {
-        conversation: ConversationDetail & { messages: MessageItem[] }
-        summary: ConversationSummary
-      }
-
-      setSelectedConversationId(data.conversation.id)
-      setSelectedConversation(data.conversation)
-      setMessages(data.conversation.messages ?? [])
-      setConversations((current) => [data.summary, ...current.filter((item) => item.id !== data.summary.id)])
-      setCreateSubject("")
-      setCreateMessage("")
-      setCreateOpen(false)
-    } catch (error) {
-      console.error(error)
-      setCreateError("相談の作成に失敗しました。")
-    } finally {
-      setCreating(false)
-    }
+      return { ...previous, [conversationId]: [...current, trimmed] }
+    })
   }
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-1 overflow-hidden bg-[#f4f7fb]">
       <ManagerSidebar />
 
-      <section className="flex h-full flex-1 flex-col lg:flex-row">
-        <div className="flex w-full flex-col border-r bg-white lg:max-w-[320px]">
+      <section className="flex h-full flex-1 flex-col lg:grid lg:grid-cols-[320px,minmax(0,1fr),360px] xl:grid-cols-[320px,minmax(0,1fr),400px]">
+        <div className="flex w-full flex-col border-b border-r bg-white lg:border-b-0">
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">相談者一覧</p>
+            <p className="mt-1 text-xs text-muted-foreground">全ての担当者とすぐにチャットできます。</p>
             <Input
               className="mt-3 bg-slate-100"
               placeholder="相談者を検索する..."
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
             />
-            <div className="mt-3 flex justify-end">
-              <Button size="sm" variant="outline" onClick={() => setCreateOpen((prev) => !prev)}>
-                {createOpen ? "閉じる" : "新規"}
-              </Button>
-            </div>
           </div>
-
-          {createOpen ? (
-            <div className="px-4 pb-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-semibold">相談を新規作成</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={handleCreateConversation} className="space-y-3">
-                    <div className="space-y-1">
-                      <Label htmlFor="create-group">グループ</Label>
-                      <select
-                        id="create-group"
-                        className="w-full rounded-md border bg-white p-2 text-sm"
-                        value={createGroupId}
-                        onChange={(event) => setCreateGroupId(event.target.value)}
-                        disabled={currentUser.role === "WORKER"}
-                      >
-                        {availableGroups.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="create-worker">担当ユーザー</Label>
-                      <select
-                        id="create-worker"
-                        className="w-full rounded-md border bg-white p-2 text-sm"
-                        value={createWorkerId}
-                        onChange={(event) => setCreateWorkerId(event.target.value)}
-                      >
-                        {availableWorkers
-                          .filter((worker) => (!createGroupId ? true : worker.groupIds.includes(createGroupId)))
-                          .map((worker) => (
-                            <option key={worker.id} value={worker.id}>
-                              {worker.name ?? worker.email ?? "利用者"}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="create-subject">件名</Label>
-                      <Input
-                        id="create-subject"
-                        placeholder="相談の概要"
-                        value={createSubject}
-                        onChange={(event) => setCreateSubject(event.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="create-message">最初のメッセージ</Label>
-                      <Textarea
-                        id="create-message"
-                        rows={3}
-                        placeholder="最初のメッセージを入力"
-                        value={createMessage}
-                        onChange={(event) => setCreateMessage(event.target.value)}
-                      />
-                    </div>
-                    {createError ? <p className="text-xs text-destructive">{createError}</p> : null}
-                    <Button type="submit" className="w-full" disabled={creating}>
-                      {creating ? "作成中..." : "相談を作成"}
-                    </Button>
-                  </form>
-                </CardContent>
-              </Card>
-            </div>
-          ) : null}
-
           <div className="space-y-2 overflow-y-auto px-2 pb-6">
             {filteredConversations.length === 0 ? (
               <p className="px-4 text-sm text-muted-foreground">一致する相談者が見つかりません。</p>
             ) : (
               filteredConversations.map((conversation) => {
                 const isActive = conversation.id === selectedConversationId
+                const removed = removedTags[conversation.id] ?? []
+                const manual = customTags[conversation.id] ?? []
+                const tags = buildConversationTags(conversation, removed, manual)
+                const isOnline = conversation.status === "IN_PROGRESS"
                 return (
                   <button
                     key={conversation.id}
@@ -516,7 +377,11 @@ function ManagerChatDashboard({
                       isActive ? "border-[#0F2C82] shadow-md" : "border-transparent hover:border-slate-200"
                     }`}
                   >
-                    <ConversationListItem conversation={conversation} />
+                    <ConversationListItem
+                      conversation={conversation}
+                      tags={tags}
+                      isOnline={isOnline}
+                    />
                   </button>
                 )
               })
@@ -524,7 +389,7 @@ function ManagerChatDashboard({
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex flex-1 flex-col overflow-hidden border-b bg-white lg:border-b-0 lg:border-r">
           <ChatView
             conversation={selectedConversation}
             messages={messages}
@@ -538,9 +403,37 @@ function ManagerChatDashboard({
             suggestions={suggestionItems}
             consultation={consultation}
             messagesRef={messagesRef}
-            showSidePanel
+            composerRef={composerRef}
           />
         </div>
+
+        <ManagerInsightsPanel
+          conversation={selectedConversation}
+          consultation={consultation}
+          suggestions={suggestionItems}
+          onSelectSuggestion={(content) => {
+            setComposer(content)
+            composerRef.current?.focus()
+          }}
+          onFocusComposer={() => composerRef.current?.focus()}
+          tags={selectedConversationTags}
+          onRemoveTag={(tag) => {
+            if (!selectedConversationId) return
+            handleRemoveTag(selectedConversationId, tag)
+          }}
+          onAddTag={() => {
+            if (!selectedConversationId) return
+            handleAddCustomTag(selectedConversationId, tagDraft)
+            setTagDraft("")
+          }}
+          newTag={tagDraft}
+          onNewTagChange={setTagDraft}
+          contact={
+            selectedConversation?.worker
+              ? workerDirectory[selectedConversation.worker.id] ?? null
+              : null
+          }
+        />
       </section>
     </div>
   )
@@ -931,7 +824,6 @@ function WorkerChatDashboard({
             suggestions={[]}
             consultation={conversationDetail?.consultation ?? null}
             messagesRef={messagesRef}
-            showSidePanel={false}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center bg-slate-50">
@@ -963,7 +855,7 @@ type ChatViewProps = {
   suggestions: Array<{ content: string; tone?: string; language?: string }>
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
   messagesRef?: React.RefObject<HTMLDivElement>
-  showSidePanel?: boolean
+  composerRef?: React.RefObject<HTMLTextAreaElement>
 }
 
 function ChatView({
@@ -976,14 +868,17 @@ function ChatView({
   onSend,
   sending,
   sendError,
-  suggestions,
-  consultation,
+  suggestions: _unusedSuggestions,
+  consultation: _unusedConsultation,
   messagesRef,
-  showSidePanel = true,
+  composerRef,
 }: ChatViewProps) {
-  const internalRef = useRef<HTMLDivElement | null>(null)
-  const mergedRef = messagesRef ?? internalRef
-  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const internalMessagesRef = useRef<HTMLDivElement | null>(null)
+  const mergedRef = messagesRef ?? internalMessagesRef
+  const internalComposerRef = useRef<HTMLTextAreaElement | null>(null)
+  const textareaRef = composerRef ?? internalComposerRef
+  void _unusedSuggestions
+  void _unusedConsultation
 
   useEffect(() => {
     const container = mergedRef.current
@@ -992,246 +887,394 @@ function ChatView({
     }
   }, [mergedRef, messages, conversation?.id])
 
-  const latestMessage = messages[messages.length - 1] ?? null
+  return (
+    <div className="flex h-full flex-1 flex-col">
+      {conversation ? (
+        <>
+          <div className="border-b px-6 py-4">
+            <p className="text-lg font-semibold">{conversation.worker.name ?? "相談"}</p>
+            {conversation.worker.locale ? (
+              <p className="text-xs text-muted-foreground">{getLocaleLabel(conversation.worker.locale)}</p>
+            ) : null}
+          </div>
+          <div ref={mergedRef} className="flex-1 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
+            {loadingMessages ? (
+              <p className="text-sm text-muted-foreground">読み込み中...</p>
+            ) : loadingError ? (
+              <p className="text-sm text-destructive">{loadingError}</p>
+            ) : messages.length === 0 ? (
+              <div className="flex h-full flex-1 flex-col items-center justify-center text-muted-foreground">
+                <Bot className="mb-3 h-10 w-10" />
+                <p className="text-sm">相談者を選択してメッセージを開始</p>
+              </div>
+            ) : (
+              messages.map((message) => {
+                const isWorker = message.sender.role === "WORKER"
+                return (
+                  <div key={message.id} className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
+                    <div
+                      className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                        isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
+                      }`}
+                    >
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                      {message.llmArtifact?.translation ? (
+                        <p className={`mt-2 text-xs ${isWorker ? "text-slate-500" : "text-white/80"}`}>
+                          {message.llmArtifact.translation}
+                        </p>
+                      ) : null}
+                      <p className={`mt-1 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
+                        {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+          <div className="border-t bg-white px-6 py-4">
+            <form onSubmit={onSend} className="space-y-3">
+              <Textarea
+                placeholder="AI提案を選択するか自分で入力してください"
+                value={composer}
+                onChange={(event) => onComposerChange(event.target.value)}
+                rows={3}
+                ref={textareaRef}
+              />
+              {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
+              <div className="flex items-center justify-end gap-3">
+                <Button type="submit" disabled={sending || !composer.trim()}>
+                  {sending ? "送信中..." : "送信"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </>
+      ) : (
+        <div className="flex h-full items-center justify-center bg-slate-50">
+          <div className="text-center text-muted-foreground">
+            <MessageSquare className="mx-auto mb-3 h-10 w-10" />
+            <p className="text-sm">相談者を選択してメッセージを開始</p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type ManagerInsightsPanelProps = {
+  conversation: (ConversationDetail & { messages: MessageItem[] }) | null
+  consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
+  suggestions: Array<{ content: string; tone?: string; language?: string }>
+  onSelectSuggestion: (content: string) => void
+  onFocusComposer: () => void
+  tags: ConversationTag[]
+  onRemoveTag: (tag: ConversationTag) => void
+  onAddTag: () => void
+  newTag: string
+  onNewTagChange: (value: string) => void
+  contact: WorkerOption | null
+}
+
+function ManagerInsightsPanel({
+  conversation,
+  consultation,
+  suggestions,
+  onSelectSuggestion,
+  onFocusComposer,
+  tags,
+  onRemoveTag,
+  onAddTag,
+  newTag,
+  onNewTagChange,
+  contact,
+}: ManagerInsightsPanelProps) {
   const toneLabelMap: Record<string, string> = {
     question: "質問",
     empathy: "共感",
     solution: "解決策",
     summary: "要約",
   }
-  const localeLabel = conversation?.worker.locale ? getLocaleLabel(conversation.worker.locale) : null
-  const statusLabel = conversation ? CASE_STATUS_LABEL[conversation.status as CaseStatus] ?? conversation.status : null
+
+  const statusLabel = conversation
+    ? CASE_STATUS_LABEL[conversation.status as CaseStatus] ?? conversation.status
+    : null
+  const isOnline = conversation ? conversation.status === "IN_PROGRESS" : false
+  const contactEmail = contact?.email ?? "未登録"
+  const contactPhone = "未登録"
+  const contactAddress = conversation ? conversation.group.name : "未登録"
 
   return (
-    <div className={`flex h-full flex-1 ${showSidePanel ? "lg:flex-row" : "flex-col"}`}>
-      <div className="flex flex-1 flex-col border-b bg-white lg:border-r">
+    <aside className="hidden h-full w-full border-l bg-[#f5f7ff] px-5 py-6 lg:flex lg:flex-col lg:gap-6">
+      <section className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
+          <Button variant="outline" size="sm" className="gap-1" type="button">
+            <Bot className="h-4 w-4" />
+            再生成
+          </Button>
+        </div>
+        <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+          {suggestions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">AI提案はまだありません。メッセージを受信すると自動生成されます。</p>
+          ) : (
+            suggestions.map((suggestion, index) => {
+              const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
+              const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
+              const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
+              return (
+                <button
+                  key={`${suggestion.content}-${index}`}
+                  type="button"
+                  onClick={() => onSelectSuggestion(suggestion.content)}
+                  className="w-full text-left"
+                >
+                  <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
+                    <CardContent className="space-y-2 p-4">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
+                          {toneLabel}
+                        </Badge>
+                        {languageLabel ? <span>{languageLabel}</span> : null}
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{suggestion.content}</p>
+                    </CardContent>
+                  </Card>
+                </button>
+              )
+            })
+          )}
+        </div>
+        <div className="mt-4 space-y-3">
+          <Button type="button" variant="secondary" className="w-full" onClick={onFocusComposer}>
+            自分で入力する
+          </Button>
+          <p className="text-center text-xs text-muted-foreground">
+            AI提案を選択するか、自分で入力して返信を作成してください。
+          </p>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
         {conversation ? (
-          <>
-            <div className="flex items-center justify-between border-b px-6 py-4">
+          <div className="mt-4 space-y-5 text-sm text-slate-700">
+            <div className="flex items-center gap-3">
+              <Avatar className="h-12 w-12">
+                <AvatarFallback>{getInitials(conversation.worker.name)}</AvatarFallback>
+              </Avatar>
               <div>
-                <p className="text-lg font-semibold">{conversation.worker.name ?? "相談"}</p>
-                <p className="text-xs text-muted-foreground">{conversation.subject ?? "件名なし"}</p>
+                <p className="font-semibold">{conversation.worker.name ?? "相談者"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {[conversation.worker.locale ? getLocaleLabel(conversation.worker.locale) : null, conversation.group.name]
+                    .filter(Boolean)
+                    .join(" ・ ")}
+                </p>
               </div>
             </div>
-            <div ref={mergedRef} className="flex-1 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
-              {loadingMessages ? (
-                <p className="text-sm text-muted-foreground">読み込み中...</p>
-              ) : loadingError ? (
-                <p className="text-sm text-destructive">{loadingError}</p>
-              ) : messages.length === 0 ? (
-                <div className="flex h-full flex-1 flex-col items-center justify-center text-muted-foreground">
-                  <Bot className="mb-3 h-10 w-10" />
-                  <p className="text-sm">相談者を選択してメッセージを開始</p>
+
+            <div className="space-y-2 text-xs text-muted-foreground">
+              <p className="font-semibold text-slate-700">ステータス</p>
+              <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+                <span
+                  className={`inline-flex h-2 w-2 rounded-full ${isOnline ? "bg-emerald-500" : "bg-slate-300"}`}
+                  aria-hidden
+                />
+                <span>{isOnline ? "オンライン" : "オフライン"}</span>
+                {statusLabel ? <Badge variant="outline">{statusLabel}</Badge> : null}
+                {consultation ? <Badge variant="secondary">{consultation.category}</Badge> : null}
+                {consultation?.priority === "HIGH" ? (
+                  <Badge className="bg-[#FF4D4F] text-white">緊急</Badge>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="space-y-2 text-xs text-muted-foreground">
+              <p className="font-semibold text-slate-700">相談タグ</p>
+              {tags.length ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {tags.map((tag) => (
+                    <span key={`detail-${tag.id}`} className="inline-flex items-center">
+                      <Badge
+                        variant={tag.tone === "urgent" ? "destructive" : "secondary"}
+                        className={
+                          tag.tone === "urgent"
+                            ? "bg-[#FF4D4F] text-white"
+                            : "bg-slate-100 text-slate-700"
+                        }
+                      >
+                        {tag.label}
+                        <button
+                          type="button"
+                          onClick={() => onRemoveTag(tag)}
+                          className={`ml-1 inline-flex items-center justify-center rounded-full p-0.5 ${
+                            tag.tone === "urgent" ? "hover:bg-white/20" : "hover:bg-slate-200"
+                          }`}
+                          aria-label={`${tag.label} を削除`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    </span>
+                  ))}
                 </div>
               ) : (
-                messages.map((message) => {
-                  const isWorker = message.sender.role === "WORKER"
-                  return (
-                    <div key={message.id} className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
-                      <div
-                        className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
-                          isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
-                        }`}
-                      >
-                        <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
-                        {message.llmArtifact?.translation ? (
-                          <p className={`mt-2 text-xs ${isWorker ? "text-slate-500" : "text-white/80"}`}>
-                            {message.llmArtifact.translation}
-                          </p>
-                        ) : null}
-                        <p className={`mt-1 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
-                          {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                  )
-                })
+                <p className="text-xs text-muted-foreground">タグは現在ありません。</p>
               )}
-            </div>
-            <div className="border-t bg-white px-6 py-4">
-              <form onSubmit={onSend} className="space-y-3">
-                <Textarea
-                  placeholder="AI提案を選択するか自分で入力してください"
-                  value={composer}
-                  onChange={(event) => onComposerChange(event.target.value)}
-                rows={3}
-                ref={composerRef}
-              />
-              {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
-              <div className="flex items-center justify-end gap-3">
-                <Button type="submit" disabled={sending || !composer.trim()}>
-                  {sending ? "送信中..." : "送信"}
-                  </Button>
-                </div>
+              <form
+                className="flex flex-wrap gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  onAddTag()
+                }}
+              >
+                <Input
+                  value={newTag}
+                  onChange={(event) => onNewTagChange(event.target.value)}
+                  placeholder="タグを追加"
+                  className="h-9 flex-1 min-w-[140px]"
+                />
+                <Button type="submit" variant="outline" disabled={!newTag.trim()}>
+                  追加
+                </Button>
               </form>
             </div>
-          </>
-        ) : (
-          <div className="flex h-full items-center justify-center bg-slate-50">
-            <div className="text-center text-muted-foreground">
-              <MessageSquare className="mx-auto mb-3 h-10 w-10" />
-              <p className="text-sm">相談者を選択してメッセージを開始</p>
+
+            {consultation?.summary ? (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p className="font-semibold text-slate-700">AI分析サマリー</p>
+                <p className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">{consultation.summary}</p>
+              </div>
+            ) : null}
+
+            {consultation?.description ? (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p className="font-semibold text-slate-700">相談内容メモ</p>
+                <p className="rounded-xl border border-dashed border-slate-200 p-3 text-[12px] text-slate-600">
+                  {consultation.description}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p className="font-semibold text-slate-700">連絡先情報</p>
+              <div className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">
+                <p>電話: {contactPhone}</p>
+                <p>メール: {contactEmail}</p>
+                <p>住所: {contactAddress}</p>
+              </div>
             </div>
           </div>
+        ) : (
+          <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-muted-foreground">
+            相談者を選択すると、AI提案と相談者情報がここに表示されます。
+          </div>
         )}
-      </div>
-
-      {showSidePanel ? (
-        <aside className="hidden h-full w-full max-w-[400px] flex-col gap-6 border-l bg-[#f5f7ff] px-5 py-6 lg:flex">
-          <section className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
-              <Button variant="outline" size="sm" className="gap-1">
-                <Bot className="h-4 w-4" />
-                再生成
-              </Button>
-            </div>
-            <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
-              {suggestions.length === 0 ? (
-                <p className="text-xs text-muted-foreground">AI提案はまだありません。メッセージを受信すると自動生成されます。</p>
-              ) : (
-                suggestions.map((suggestion, index) => {
-                  const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
-                  const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
-                  const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
-                  return (
-                    <button
-                      key={`${suggestion.content}-${index}`}
-                      type="button"
-                      onClick={() => {
-                        onComposerChange(suggestion.content)
-                        composerRef.current?.focus()
-                      }}
-                      className="w-full text-left"
-                    >
-                      <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                        <CardContent className="space-y-2 p-4">
-                          <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
-                              {toneLabel}
-                            </Badge>
-                            {languageLabel ? <span>{languageLabel}</span> : null}
-                          </div>
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-                            {suggestion.content}
-                          </p>
-                        </CardContent>
-                      </Card>
-                    </button>
-                  )
-                })
-              )}
-            </div>
-            <div className="mt-4 space-y-3">
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full"
-                onClick={() => composerRef.current?.focus()}
-              >
-                自分で入力する
-              </Button>
-              <p className="text-center text-xs text-muted-foreground">
-                AI提案を選択するか、自分で入力して返信を作成してください。
-              </p>
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
-            {conversation ? (
-              <div className="mt-4 space-y-4 text-sm text-slate-700">
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-12 w-12">
-                    <AvatarFallback>{getInitials(conversation.worker.name)}</AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <p className="font-semibold">{conversation.worker.name ?? "相談者"}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {[localeLabel, conversation.group.name].filter(Boolean).join(" ・ ")}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-1 text-xs text-muted-foreground">
-                  <p className="font-semibold text-slate-700">ステータス</p>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {statusLabel ? <Badge variant="outline">{statusLabel}</Badge> : null}
-                    {consultation ? <Badge variant="secondary">{consultation.category}</Badge> : null}
-                    {consultation ? (
-                      <Badge className="bg-red-100 text-red-700">
-                        {CASE_PRIORITY_LABEL[consultation.priority]}
-                      </Badge>
-                    ) : null}
-                  </div>
-                </div>
-
-                {latestMessage ? (
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    <p className="font-semibold text-slate-700">最新メッセージ</p>
-                    <p className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">
-                      {latestMessage.body}
-                    </p>
-                  </div>
-                ) : null}
-
-                {consultation?.summary ? (
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    <p className="font-semibold text-slate-700">AI分析サマリー</p>
-                    <p className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">
-                      {consultation.summary}
-                    </p>
-                  </div>
-                ) : null}
-
-                {consultation?.description ? (
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    <p className="font-semibold text-slate-700">相談内容メモ</p>
-                    <p className="rounded-xl border border-dashed border-slate-200 p-3 text-[12px] text-slate-600">
-                      {consultation.description}
-                    </p>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <p className="mt-3 text-xs text-muted-foreground">相談者を選択すると詳細が表示されます。</p>
-            )}
-          </section>
-        </aside>
-      ) : null}
-    </div>
+      </section>
+    </aside>
   )
 }
 
-function ConversationListItem({ conversation }: { conversation: ConversationSummary }) {
+
+type ConversationTag = {
+  id: string
+  label: string
+  tone?: "default" | "urgent"
+  kind: "auto" | "manual"
+}
+
+function buildConversationTags(
+  conversation: ConversationSummary | (ConversationDetail & { messages: MessageItem[] }),
+  removedIds: string[],
+  manualLabels: string[],
+): ConversationTag[] {
+  const excluded = new Set(removedIds)
+  const tags: ConversationTag[] = []
+  const seen = new Set<string>()
+
+  const pushTag = (tag: ConversationTag) => {
+    if (excluded.has(tag.id) || seen.has(tag.id)) {
+      return
+    }
+    seen.add(tag.id)
+    tags.push(tag)
+  }
+
+  if (conversation.group?.name) {
+    pushTag({ id: `group-${conversation.group.id}`, label: conversation.group.name, kind: "auto" })
+  }
+
+  const category = conversation.consultation?.category
+  if (category) {
+    pushTag({ id: `category-${category}`, label: category, kind: "auto" })
+  }
+
+  if (conversation.consultation?.priority === "HIGH") {
+    pushTag({ id: `${conversation.id}-urgent`, label: "緊急", tone: "urgent", kind: "auto" })
+  }
+
+  manualLabels.forEach((label) => {
+    const trimmed = label.trim()
+    if (!trimmed) return
+    const manualId = `manual-${trimmed.toLowerCase()}`
+    pushTag({ id: manualId, label: trimmed, kind: "manual" })
+  })
+
+  return tags
+}
+
+function ConversationListItem({
+  conversation,
+  tags,
+  isOnline,
+}: {
+  conversation: ConversationSummary
+  tags: ConversationTag[]
+  isOnline: boolean
+}) {
   return (
     <div className="flex items-start gap-3">
       <Avatar className="h-10 w-10">
         <AvatarFallback>{getInitials(conversation.worker?.name)}</AvatarFallback>
       </Avatar>
       <div className="flex-1">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold">{conversation.worker?.name ?? "相談"}</p>
-          <span className="text-xs text-muted-foreground">{formatRelativeTime(conversation.updatedAt)}</span>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">{conversation.worker?.name ?? "相談"}</p>
+            <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+              {conversation.lastMessage?.body ?? "まだメッセージがありません"}
+            </p>
+          </div>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatRelativeTime(conversation.updatedAt)}
+          </span>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">{conversation.subject ?? "件名なし"}</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          <Badge variant="outline">{conversation.group.name}</Badge>
-          {conversation.consultation ? (
-            <Badge variant="secondary">{conversation.consultation.category}</Badge>
-          ) : null}
-          {conversation.consultation ? (
-            <Badge className="bg-red-100 text-red-700">
-              {CASE_PRIORITY_LABEL[conversation.consultation.priority]}
-            </Badge>
-          ) : null}
+        <div className="mt-2 flex items-center gap-2">
+          <span
+            className={`inline-flex h-2 w-2 rounded-full ${
+              isOnline ? "bg-emerald-500" : "bg-slate-300"
+            }`}
+            aria-hidden
+          />
+          <div className="flex flex-wrap gap-2">
+            {tags.map((tag) => (
+              <Badge
+                key={tag.id}
+                variant={tag.tone === "urgent" ? "destructive" : "secondary"}
+                className={
+                  tag.tone === "urgent"
+                    ? "bg-[#FF4D4F] text-white"
+                    : "bg-slate-100 text-slate-700"
+                }
+              >
+                {tag.label}
+              </Badge>
+            ))}
+          </div>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          {conversation.lastMessage?.body?.slice(0, 60) ?? "メッセージなし"}
-        </p>
       </div>
     </div>
   )
