@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation"
 
 import { auth } from "@/auth"
-import { AppHeader } from "@/app/_components/app-header"
 import { ChatDashboard } from "@/app/_components/chat-dashboard"
 import { listGroupsForUser, listWorkersForConversationCreation } from "@/server/services/access"
 import { listConversationsForUser } from "@/server/services/conversation"
@@ -70,15 +69,7 @@ export default async function HomePage() {
   }))
 
   return (
-    <main className="flex min-h-screen flex-col bg-muted/20">
-      <AppHeader
-        currentUser={{
-          id: session.user.id,
-          role: session.user.role,
-          name: session.user.name ?? null,
-          email: session.user.email ?? null,
-        }}
-      />
+    <main className="flex h-screen flex-col bg-muted/20">
       <ChatDashboard
         initialConversations={initialConversations}
         availableGroups={availableGroups}

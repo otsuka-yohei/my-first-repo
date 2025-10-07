@@ -2,6 +2,7 @@ import type { Metadata } from "next"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { AppSidebar } from "@/app/_components/app-sidebar"
 
 export const metadata: Metadata = {
   title: "分析レポート",
@@ -66,69 +67,72 @@ const KPI_LIST = [
 
 export default function ReportsPage() {
   return (
-    <main className="flex min-h-screen flex-col gap-8 bg-muted/20 p-10">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">分析レポート</h1>
-        <p className="text-sm text-muted-foreground">
-          相談履歴の推移やAI分析の要点を確認し、チームの対応状況を把握できます。
-        </p>
-      </header>
-
-      <section className="grid gap-6 lg:grid-cols-3">
-        {KPI_LIST.map((item) => (
-          <Card key={item.label} className="border-none bg-white shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">{item.label}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold">{item.value}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </section>
-
-      <section className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-        <Card className="border-none bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg font-semibold">相談履歴</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {SAMPLE_CASES.map((item) => (
-              <article key={item.id} className="rounded-2xl border border-slate-100 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-base font-semibold">{item.subject}</h3>
-                  <Badge variant={CASE_STATUS_VARIANT[item.status] ?? "default"}>
-                    {CASE_STATUS_LABEL[item.status] ?? item.status}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">{item.updatedAt}</span>
-                </div>
-                <p className="mt-2 text-sm text-muted-foreground">{item.user} ・ {item.language}</p>
-                <p className="mt-3 text-sm">
-                  {item.aiSummary}
-                </p>
-              </article>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card className="border-none bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg font-semibold">AI分析ハイライト</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {LANG_ANALYTICS.map((item) => (
-              <div key={item.language} className="rounded-xl bg-slate-50 p-4">
-                <p className="text-sm font-semibold">{item.language}</p>
-                <p className="mt-1 text-2xl font-semibold text-[#0F2C82]">{item.ratio}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{item.trend}</p>
-              </div>
-            ))}
-            <p className="text-xs text-muted-foreground">
-              LLMが抽出したリスク要因やフォローアップ候補は、個別の相談詳細画面から確認できます。
+    <div className="flex h-screen bg-[#f4f7fb]">
+      <AppSidebar />
+      <main className="flex-1 overflow-y-auto">
+        <div className="space-y-8 bg-muted/20 p-10">
+          <header className="flex flex-col gap-2">
+            <h1 className="text-2xl font-semibold">分析レポート</h1>
+            <p className="text-sm text-muted-foreground">
+              相談履歴の推移やAI分析の要点を確認し、チームの対応状況を把握できます。
             </p>
-          </CardContent>
-        </Card>
-      </section>
-    </main>
+          </header>
+
+          <section className="grid gap-6 lg:grid-cols-3">
+            {KPI_LIST.map((item) => (
+              <Card key={item.label} className="border-none bg-white shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-muted-foreground">{item.label}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">{item.value}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </section>
+
+          <section className="grid gap-6 lg:grid-cols-[2fr,1fr]">
+            <Card className="border-none bg-white shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold">相談履歴</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {SAMPLE_CASES.map((item) => (
+                  <article key={item.id} className="rounded-2xl border border-slate-100 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-semibold">{item.subject}</h3>
+                      <Badge variant={CASE_STATUS_VARIANT[item.status] ?? "default"}>
+                        {CASE_STATUS_LABEL[item.status] ?? item.status}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{item.updatedAt}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-muted-foreground">{item.user} ・ {item.language}</p>
+                    <p className="mt-3 text-sm">{item.aiSummary}</p>
+                  </article>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="border-none bg-white shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold">AI分析ハイライト</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {LANG_ANALYTICS.map((item) => (
+                  <div key={item.language} className="rounded-xl bg-slate-50 p-4">
+                    <p className="text-sm font-semibold">{item.language}</p>
+                    <p className="mt-1 text-2xl font-semibold text-[#0F2C82]">{item.ratio}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.trend}</p>
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  LLMが抽出したリスク要因やフォローアップ候補は、個別の相談詳細画面から確認できます。
+                </p>
+              </CardContent>
+            </Card>
+          </section>
+        </div>
+      </main>
+    </div>
   )
 }

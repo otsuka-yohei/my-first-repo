@@ -1,9 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import Link from "next/link"
-import { usePathname, useRouter } from "next/navigation"
-import { BarChart3, Bot, LogOut, MessageSquare, Settings, Users, X } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { Bot, MessageSquare, X } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -11,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { AppSidebar } from "./app-sidebar"
 import type { CasePriority, CaseStatus } from "@prisma/client"
 
 type UserRole = "WORKER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
@@ -90,13 +90,6 @@ type ChatDashboardProps = {
   }
 }
 
-const NAV_ITEMS = [
-  { id: "chat", href: "/", icon: MessageSquare, label: "相談" },
-  { id: "users", href: "/users", icon: Users, label: "顧客" },
-  { id: "reports", href: "/reports", icon: BarChart3, label: "レポート" },
-  { id: "settings", href: "/settings", icon: Settings, label: "設定" },
-]
-
 const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
   IN_PROGRESS: "対応中",
   RESOLVED: "解決済み",
@@ -173,7 +166,9 @@ function ManagerChatDashboard({
         if (!res.ok) {
           throw new Error("Failed to load conversation")
         }
-        const data = await res.json()
+        const data = await readJson<{
+          conversation: ConversationDetail & { messages: MessageItem[] }
+        }>(res)
         if (cancelled) return
 
         const { conversation } = data as {
@@ -290,7 +285,7 @@ function ManagerChatDashboard({
         throw new Error("failed to send")
       }
 
-      const data = (await res.json()) as { message: MessageItem }
+      const data = await readJson<{ message: MessageItem }>(res)
       setMessages((current) => [...current, data.message])
       setComposer("")
       setConversations((current) =>
@@ -343,10 +338,10 @@ function ManagerChatDashboard({
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-1 overflow-hidden bg-[#f4f7fb]">
-      <ManagerSidebar />
+    <div className="flex h-screen flex-1 overflow-hidden bg-[#f4f7fb]">
+      <AppSidebar />
 
-      <section className="grid h-full flex-1 grid-cols-1 md:grid-cols-[280px,minmax(0,1fr),320px] xl:grid-cols-[320px,minmax(0,1fr),400px]">
+      <section className="grid h-full flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_400px]">
         <div className="flex h-full min-h-0 flex-col border-b border-r bg-white md:border-b-0">
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">相談者一覧</p>
@@ -439,42 +434,6 @@ function ManagerChatDashboard({
   )
 }
 
-function ManagerSidebar() {
-  const pathname = usePathname()
-
-  return (
-    <aside className="hidden h-full w-[88px] min-h-[calc(100vh-4rem)] flex-col bg-[#0F2C82] text-white lg:flex">
-      <nav className="flex flex-1 flex-col items-center gap-8 py-10">
-        {NAV_ITEMS.map((item) => {
-          const active = pathname === item.href
-          const Icon = item.icon
-          return (
-            <Link
-              key={item.id}
-              href={item.href}
-              aria-label={item.label}
-              className={`flex h-12 w-12 items-center justify-center rounded-2xl transition ${
-                active ? "bg-white text-[#0F2C82]" : "text-white/70 hover:bg-white/15"
-              }`}
-            >
-              <Icon className="h-5 w-5" />
-            </Link>
-          )
-        })}
-      </nav>
-      <div className="flex items-center justify-center pb-8">
-        <button
-          type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-full text-white/70 transition hover:bg-white/10 hover:text-white"
-          aria-label="ログアウト"
-        >
-          <LogOut className="h-5 w-5" />
-        </button>
-      </div>
-    </aside>
-  )
-}
-
 // -----------------------------------------------------------------------------
 // Worker layout (mobile friendly)
 // -----------------------------------------------------------------------------
@@ -544,7 +503,9 @@ function WorkerChatDashboard({
         if (!res.ok) {
           throw new Error("Failed to load conversation")
         }
-        const data = await res.json()
+        const data = await readJson<{
+          conversation: ConversationDetail & { messages: MessageItem[] }
+        }>(res)
         if (cancelled) return
 
         const { conversation } = data as {
@@ -642,10 +603,10 @@ function WorkerChatDashboard({
         throw new Error("failed to create conversation")
       }
 
-      const data = (await res.json()) as {
+      const data = await readJson<{
         conversation: ConversationDetail & { messages: MessageItem[] }
         summary: ConversationSummary
-      }
+      }>(res)
 
       setConversations((current) => [data.summary, ...current])
       return data.summary
@@ -695,7 +656,7 @@ function WorkerChatDashboard({
         throw new Error("failed to send")
       }
 
-      const data = (await res.json()) as { message: MessageItem }
+      const data = await readJson<{ message: MessageItem }>(res)
       setMessages((current) => [...current, data.message])
       setComposer("")
       setConversations((current) =>
@@ -718,7 +679,7 @@ function WorkerChatDashboard({
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-1 overflow-hidden bg-[#f4f7fb]">
+    <div className="flex h-screen flex-1 overflow-hidden bg-[#f4f7fb]">
       <div className="flex w-full lg:max-w-[320px] lg:flex-col lg:border-r lg:bg-white">
         <div className="flex w-full items-center justify-between bg-white px-4 py-4 lg:hidden">
           <div className="flex gap-3">
@@ -910,6 +871,7 @@ function ChatView({
             ) : (
               messages.map((message) => {
                 const isWorker = message.sender.role === "WORKER"
+                const translation = message.llmArtifact?.translation?.trim()
                 return (
                   <div key={message.id} className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
                     <div
@@ -917,13 +879,27 @@ function ChatView({
                         isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
                       }`}
                     >
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
-                      {message.llmArtifact?.translation ? (
-                        <p className={`mt-2 text-xs ${isWorker ? "text-slate-500" : "text-white/80"}`}>
-                          {message.llmArtifact.translation}
+                      <div className="space-y-3">
+                        <p
+                          className={`whitespace-pre-wrap text-sm leading-relaxed ${
+                            isWorker ? "text-slate-800" : "text-white"
+                          }`}
+                        >
+                          {message.body}
                         </p>
-                      ) : null}
-                      <p className={`mt-1 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
+                        {translation ? (
+                          <div
+                            className={`border-t pt-3 text-sm leading-relaxed ${
+                              isWorker
+                                ? "border-slate-300 text-slate-600"
+                                : "border-white/40 text-white/80"
+                            }`}
+                          >
+                            <p className="whitespace-pre-wrap">{translation}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                      <p className={`mt-3 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
                         {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
                           hour: "2-digit",
                           minute: "2-digit",
@@ -963,6 +939,25 @@ function ChatView({
       )}
     </div>
   )
+}
+
+async function readJson<T>(res: Response): Promise<T> {
+  const contentType = res.headers.get("content-type") ?? ""
+  const text = await res.text()
+
+  if (!contentType.includes("application/json")) {
+    throw new Error("予期しないレスポンス形式です")
+  }
+
+  if (!text.trim()) {
+    throw new Error("サーバーから空のレスポンスが返されました")
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch (error) {
+    throw new Error("レスポンスの解析に失敗しました")
+  }
 }
 
 type ManagerInsightsPanelProps = {
@@ -1031,6 +1026,7 @@ function ManagerInsightsPanel({
               const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
               const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
               const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
+              const { primary, secondary } = splitSuggestionContent(suggestion.content)
               return (
                 <button
                   key={`${suggestion.content}-${index}`}
@@ -1039,14 +1035,21 @@ function ManagerInsightsPanel({
                   className="w-full text-left"
                 >
                   <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                    <CardContent className="space-y-2 p-4">
+                    <CardContent className="space-y-3 p-4">
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
                           {toneLabel}
                         </Badge>
                         {languageLabel ? <span>{languageLabel}</span> : null}
                       </div>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{suggestion.content}</p>
+                      <div className="space-y-3 text-sm leading-relaxed text-slate-700">
+                        <p className="whitespace-pre-wrap">{primary}</p>
+                        {secondary ? (
+                          <div className="border-t border-slate-200 pt-3 text-slate-600">
+                            <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
+                          </div>
+                        ) : null}
+                      </div>
                     </CardContent>
                   </Card>
                 </button>
@@ -1184,6 +1187,25 @@ function ManagerInsightsPanel({
   )
 }
 
+
+function splitSuggestionContent(content: string) {
+  const normalized = content.replace(/\r\n/g, "\n").trim()
+  if (!normalized) {
+    return { primary: "", secondary: "" }
+  }
+
+  const blocks = normalized.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean)
+  if (blocks.length >= 2) {
+    return { primary: blocks[0], secondary: blocks.slice(1).join("\n\n") }
+  }
+
+  const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean)
+  if (lines.length >= 2) {
+    return { primary: lines[0], secondary: lines.slice(1).join("\n") }
+  }
+
+  return { primary: normalized, secondary: "" }
+}
 
 type ConversationTag = {
   id: string

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useFormStatus } from "react-dom"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -8,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+
+import { logoutAction } from "@/app/actions/logout"
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -70,7 +73,7 @@ export default function SettingsClient() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col gap-8 bg-muted/20 p-10">
+    <div className="flex min-h-full flex-col gap-8 bg-muted/20 p-10">
       <header className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">個人設定</h1>
         <p className="text-sm text-muted-foreground">
@@ -172,6 +175,27 @@ export default function SettingsClient() {
           <span>所属グループのメンバー管理や相談のエスカレーションが可能です。</span>
         </CardContent>
       </Card>
-    </main>
+
+      <Card className="border-none bg-white shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">サインアウト</CardTitle>
+        </CardHeader>
+        <CardContent className="flex justify-end">
+          <form action={logoutAction}>
+            <SignOutButton />
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function SignOutButton() {
+  const { pending } = useFormStatus()
+
+  return (
+    <Button type="submit" variant="destructive" disabled={pending}>
+      {pending ? "サインアウト中..." : "サインアウト"}
+    </Button>
   )
 }
