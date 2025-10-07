@@ -346,8 +346,8 @@ function ManagerChatDashboard({
     <div className="flex h-[calc(100vh-4rem)] flex-1 overflow-hidden bg-[#f4f7fb]">
       <ManagerSidebar />
 
-      <section className="flex h-full flex-1 flex-col lg:grid lg:grid-cols-[320px,minmax(0,1fr),360px] xl:grid-cols-[320px,minmax(0,1fr),400px]">
-        <div className="flex w-full flex-col border-b border-r bg-white lg:border-b-0">
+      <section className="grid h-full flex-1 grid-cols-1 lg:grid-cols-[320px,minmax(0,1fr),360px] xl:grid-cols-[320px,minmax(0,1fr),400px]">
+        <div className="flex h-full min-h-0 flex-col border-b border-r bg-white lg:border-b-0">
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">相談者一覧</p>
             <p className="mt-1 text-xs text-muted-foreground">全ての担当者とすぐにチャットできます。</p>
@@ -389,7 +389,7 @@ function ManagerChatDashboard({
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col overflow-hidden border-b bg-white lg:border-b-0 lg:border-r">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden border-b border-r bg-white lg:border-b-0">
           <ChatView
             conversation={selectedConversation}
             messages={messages}
@@ -1008,11 +1008,17 @@ function ManagerInsightsPanel({
   const contactAddress = conversation ? conversation.group.name : "未登録"
 
   return (
-    <aside className="hidden h-full w-full border-l bg-[#f5f7ff] px-5 py-6 lg:flex lg:flex-col lg:gap-6">
-      <section className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <aside className="hidden h-full min-h-0 w-full flex-col gap-6 overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 lg:flex">
+      <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
-          <Button variant="outline" size="sm" className="gap-1" type="button">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            type="button"
+            onClick={onFocusComposer}
+          >
             <Bot className="h-4 w-4" />
             再生成
           </Button>
@@ -1058,7 +1064,7 @@ function ManagerInsightsPanel({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="min-h-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
         {conversation ? (
           <div className="mt-4 space-y-5 text-sm text-slate-700">
