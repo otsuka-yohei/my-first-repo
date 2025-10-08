@@ -250,42 +250,7 @@ export async function appendMessage(params: {
     return created
   })
 
-  const targetLanguage =
-    params.user.role === UserRole.WORKER ? "ja" : conversation.worker.locale ?? "vi"
-
-  try {
-    const enrichment = await enrichMessageWithLLM({
-      content: message.body,
-      language: message.language,
-      targetLanguage,
-    })
-
-    await prisma.messageLLMArtifact.upsert({
-      where: { messageId: message.id },
-      update: {
-        translation: enrichment.translation?.translation,
-        translationLang: targetLanguage,
-        suggestions: enrichment.suggestions,
-        extra: {
-          provider: enrichment.translation?.provider,
-          model: enrichment.translation?.model,
-        },
-      },
-      create: {
-        messageId: message.id,
-        translation: enrichment.translation?.translation,
-        translationLang: targetLanguage,
-        suggestions: enrichment.suggestions,
-        extra: {
-          provider: enrichment.translation?.provider,
-          model: enrichment.translation?.model,
-        },
-      },
-    })
-  } catch (error) {
-    console.error("Failed to enrich message", error)
-  }
-
+  // メッセージを即座に取得して返す（LLM処理を待たない）
   const createdMessage = await prisma.message.findUnique({
     where: { id: message.id },
     include: {
@@ -298,9 +263,62 @@ export async function appendMessage(params: {
     throw new Error("Failed to load created message")
   }
 
+  // LLM処理をバックグラウンドで実行（レスポンスを待たない）
+  const targetLanguage =
+    params.user.role === UserRole.WORKER ? "ja" : conversation.worker.locale ?? "vi"
+
+  void enrichMessageInBackground(message.id, message.body, message.language, targetLanguage, conversation.worker.locale ?? undefined)
   void regenerateConversationSegmentsInBackground(params.conversationId)
 
   return createdMessage
+}
+
+async function enrichMessageInBackground(
+  messageId: string,
+  content: string,
+  language: string,
+  targetLanguage: string,
+  workerLocale?: string,
+) {
+  try {
+    console.log(`[background] Starting LLM enrichment for message ${messageId}`)
+    const startTime = Date.now()
+
+    const enrichment = await enrichMessageWithLLM({
+      content,
+      language,
+      targetLanguage,
+      workerLocale,
+    })
+
+    await prisma.messageLLMArtifact.upsert({
+      where: { messageId },
+      update: {
+        translation: enrichment.translation?.translation,
+        translationLang: targetLanguage,
+        suggestions: enrichment.suggestions,
+        extra: {
+          provider: enrichment.translation?.provider,
+          model: enrichment.translation?.model,
+        },
+      },
+      create: {
+        messageId,
+        translation: enrichment.translation?.translation,
+        translationLang: targetLanguage,
+        suggestions: enrichment.suggestions,
+        extra: {
+          provider: enrichment.translation?.provider,
+          model: enrichment.translation?.model,
+        },
+      },
+    })
+
+    const duration = Date.now() - startTime
+    console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
+  } catch (error) {
+    console.error(`[background] Failed to enrich message ${messageId}:`, error)
+  }
 }
 
 async function regenerateConversationSegmentsInBackground(conversationId: string) {
@@ -390,6 +408,7 @@ export async function regenerateMessageSuggestions(params: {
       content: latestWorkerMessage.body,
       language: latestWorkerMessage.language,
       targetLanguage,
+      workerLocale: conversation.worker?.locale ?? undefined,
     })
   } catch (error) {
     console.error("Failed to regenerate message suggestions", error)

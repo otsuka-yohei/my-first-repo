@@ -9,6 +9,48 @@ const SUGGEST_MODEL = "gemini-2.5-flash"
 const TAGGING_MODEL = "gemini-2.5-flash"
 const SEGMENT_MODEL = "gemini-2.5-flash"
 
+// シンプルな翻訳キャッシュ（メモリベース）
+// キャッシュサイズを制限して、メモリリークを防ぐ
+const CACHE_MAX_SIZE = 500
+const translationCache = new Map<string, { translation: string; timestamp: number }>()
+
+function getCacheKey(content: string, sourceLang: string, targetLang: string): string {
+  // 内容、元言語、翻訳先言語からキャッシュキーを生成
+  return `${sourceLang}:${targetLang}:${content.substring(0, 200)}`
+}
+
+function getCachedTranslation(content: string, sourceLang: string, targetLang: string): string | null {
+  const key = getCacheKey(content, sourceLang, targetLang)
+  const cached = translationCache.get(key)
+
+  if (cached) {
+    // 1時間以内のキャッシュのみ有効
+    const age = Date.now() - cached.timestamp
+    if (age < 60 * 60 * 1000) {
+      console.log(`[llm] translate: Cache hit (age: ${Math.round(age / 1000)}s)`)
+      return cached.translation
+    } else {
+      translationCache.delete(key)
+    }
+  }
+
+  return null
+}
+
+function setCachedTranslation(content: string, sourceLang: string, targetLang: string, translation: string): void {
+  // キャッシュサイズ制限を超えた場合、古いエントリを削除
+  if (translationCache.size >= CACHE_MAX_SIZE) {
+    const oldestKey = translationCache.keys().next().value
+    if (oldestKey) {
+      translationCache.delete(oldestKey)
+      console.log(`[llm] translate: Cache eviction (size: ${translationCache.size})`)
+    }
+  }
+
+  const key = getCacheKey(content, sourceLang, targetLang)
+  translationCache.set(key, { translation, timestamp: Date.now() })
+}
+
 const translateModel = env.GOOGLE_TRANSLATE_API_KEY
   ? new GoogleGenerativeAI(env.GOOGLE_TRANSLATE_API_KEY).getGenerativeModel({ model: TRANSLATE_MODEL })
   : null
@@ -42,12 +84,15 @@ export interface SuggestedReply {
   content: string
   tone: "question" | "empathy" | "solution"
   language: string
+  translation?: string
+  translationLang?: string
 }
 
 export interface SuggestionRequest {
   transcript: string
   language: string
   persona: "agent" | "manager"
+  targetTranslationLanguage?: string
 }
 
 export interface EnrichmentResult {
@@ -55,20 +100,35 @@ export interface EnrichmentResult {
   suggestions?: SuggestedReply[]
 }
 
-async function safeGenerateText(model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]> | null, prompt: string) {
+async function safeGenerateText(model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]> | null, prompt: string, operationName = "generate") {
   if (!model) {
+    console.log(`[llm] ${operationName}: Model not configured, skipping`)
     return null
   }
 
+  const startTime = Date.now()
+
   try {
+    console.log(`[llm] ${operationName}: Starting (prompt length: ${prompt.length} chars)`)
+
     const result = await model.generateContent(prompt)
     const text = result.response.text().trim()
+
+    const duration = Date.now() - startTime
+    const inputTokens = Math.ceil(prompt.length / 4) // 概算
+    const outputTokens = Math.ceil(text.length / 4) // 概算
+
+    console.log(`[llm] ${operationName}: Success (${duration}ms, ~${inputTokens + outputTokens} tokens)`)
+
     return text
   } catch (error) {
-    console.error("[llm] Generation failed:", error instanceof Error ? error.message : String(error))
+    const duration = Date.now() - startTime
+    console.error(`[llm] ${operationName}: Failed after ${duration}ms -`, error instanceof Error ? error.message : String(error))
+
     if (error instanceof Error && "response" in error) {
-      console.error("[llm] API response:", JSON.stringify(error, null, 2))
+      console.error(`[llm] ${operationName}: API response:`, JSON.stringify(error, null, 2))
     }
+
     return null
   }
 }
@@ -76,16 +136,32 @@ async function safeGenerateText(model: ReturnType<GoogleGenerativeAI["getGenerat
 export async function translateMessage(
   request: TranslationRequest,
 ): Promise<TranslationResult> {
+  // キャッシュをチェック
+  const cachedTranslation = getCachedTranslation(request.content, request.sourceLanguage, request.targetLanguage)
+  if (cachedTranslation) {
+    return {
+      translation: cachedTranslation,
+      provider: "google-ai-studio",
+      model: TRANSLATE_MODEL,
+      warnings: ["Translation retrieved from cache"],
+    }
+  }
+
   const prompt =
+    `You are a professional translator specializing in customer support communications.\n\n` +
     `Translate the following message from ${request.sourceLanguage} to ${request.targetLanguage}.\n\n` +
-    `IMPORTANT: Return ONLY the translated text, without any additional explanation or formatting.\n\n` +
+    `IMPORTANT Guidelines:\n` +
+    `- Maintain a polite and professional tone appropriate for customer support\n` +
+    `- Preserve the original meaning and intent\n` +
+    `- Use natural, conversational language that native speakers would use\n` +
+    `- Return ONLY the translated text, without any additional explanation or formatting\n\n` +
     `Message:\n${request.content}`
 
-  const output = await safeGenerateText(translateModel, prompt)
+  const output = await safeGenerateText(translateModel, prompt, `translate-${request.sourceLanguage}-to-${request.targetLanguage}`)
 
   if (!output) {
     const reason = translateModel ? "Translation request failed" : "GOOGLE_TRANSLATE_API_KEY not set"
-    console.log(`[llm] ${reason}; returning original content`)
+    console.log(`[llm] translate: ${reason}; returning original content`)
     return {
       translation: request.content,
       provider: translateModel ? "google-ai-studio" : "mock",
@@ -93,6 +169,9 @@ export async function translateMessage(
       warnings: [`${reason}; returning original content.`],
     }
   }
+
+  // キャッシュに保存
+  setCachedTranslation(request.content, request.sourceLanguage, request.targetLanguage, output)
 
   console.log(`[llm] Translation successful: ${request.sourceLanguage} -> ${request.targetLanguage}`)
   return {
@@ -115,11 +194,11 @@ export async function generateSuggestedReplies(
     `Do NOT include any other text, numbering, or markdown formatting.\n\n` +
     `Transcript:\n${request.transcript}`
 
-  const output = await safeGenerateText(suggestModel, prompt)
+  const output = await safeGenerateText(suggestModel, prompt, `suggestions-${request.language}`)
 
   if (!output) {
     if (!suggestModel) {
-      console.log("[llm] GOOGLE_SUGGEST_API_KEY not configured, returning mock suggestions")
+      console.log("[llm] suggestions: GOOGLE_SUGGEST_API_KEY not configured, returning mock suggestions")
       return [
         {
           content: "ご質問ありがとうございます。詳しく教えていただけますか？",
@@ -187,6 +266,47 @@ export async function generateSuggestedReplies(
     ]
   }
 
+  // 翻訳が必要な場合（targetTranslationLanguageが指定され、languageと異なる場合）
+  if (request.targetTranslationLanguage && request.targetTranslationLanguage !== request.language) {
+    console.log(`[llm] Translating suggestions from ${request.language} to ${request.targetTranslationLanguage}`)
+
+    try {
+      const translatedSuggestions = await Promise.all(
+        suggestions.map(async (suggestion, index) => {
+          try {
+            const translationResult = await translateMessage({
+              content: suggestion.content,
+              sourceLanguage: request.language,
+              targetLanguage: request.targetTranslationLanguage!,
+            })
+
+            console.log(`[llm] Suggestion ${index + 1}/${suggestions.length} translated successfully`)
+
+            return {
+              ...suggestion,
+              translation: translationResult.translation,
+              translationLang: request.targetTranslationLanguage,
+            }
+          } catch (error) {
+            console.error(`[llm] Failed to translate suggestion ${index + 1}:`, error instanceof Error ? error.message : String(error))
+            // 翻訳失敗時は元のsuggestionをそのまま返す（翻訳なし）
+            return suggestion
+          }
+        })
+      )
+
+      const successCount = translatedSuggestions.filter(s => s.translation).length
+      console.log(`[llm] Translation complete: ${successCount}/${suggestions.length} suggestions translated successfully`)
+
+      return translatedSuggestions
+    } catch (error) {
+      console.error("[llm] Critical error during translation:", error instanceof Error ? error.message : String(error))
+      // 全体の翻訳処理が失敗した場合でも、元のsuggestionを返す
+      console.log("[llm] Falling back to suggestions without translations")
+      return suggestions
+    }
+  }
+
   return suggestions
 }
 
@@ -194,7 +314,13 @@ export async function enrichMessageWithLLM(params: {
   content: string
   language: string
   targetLanguage: string
+  workerLocale?: string
 }): Promise<EnrichmentResult> {
+  // Workerのlocaleが日本語以外の場合、AI返信に翻訳を追加
+  const shouldTranslateSuggestions = params.workerLocale &&
+    !params.workerLocale.toLowerCase().startsWith('ja') &&
+    params.targetLanguage !== params.workerLocale
+
   const [translation, suggestions] = await Promise.all([
     translateMessage({
       content: params.content,
@@ -205,6 +331,7 @@ export async function enrichMessageWithLLM(params: {
       transcript: params.content,
       language: params.targetLanguage,
       persona: "agent",
+      targetTranslationLanguage: shouldTranslateSuggestions ? params.workerLocale : undefined,
     }),
   ])
 
@@ -259,11 +386,11 @@ export async function generateConversationTags(
     `}\n\n` +
     `### 会話履歴:\n${transcript}`
 
-  const output = await safeGenerateText(taggingModel, prompt)
+  const output = await safeGenerateText(taggingModel, prompt, "conversation-tagging")
 
   if (!output) {
     const reason = taggingModel ? "分析に失敗しました" : "API設定がありません"
-    console.log(`[llm] Tag generation failed: ${reason}`)
+    console.log(`[llm] tagging: ${reason}`)
     return {
       category: "未分類",
       tags: [],
@@ -353,11 +480,11 @@ export async function segmentConversation(
     `]\n\n` +
     `### 会話履歴:\n${transcript}`
 
-  const output = await safeGenerateText(segmentModel, prompt)
+  const output = await safeGenerateText(segmentModel, prompt, "conversation-segmentation")
 
   if (!output) {
     const reason = segmentModel ? "セグメント分析に失敗しました" : "API設定がありません"
-    console.log(`[llm] Segment generation failed: ${reason}`)
+    console.log(`[llm] segmentation: ${reason}`)
     return [{
       title: "会話全体",
       summary: reason,

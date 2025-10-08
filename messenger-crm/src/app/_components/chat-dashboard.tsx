@@ -341,6 +341,30 @@ function ManagerChatDashboard({
 
     setSending(true)
     setSendError(null)
+
+    // 楽観的UI更新：送信前に即座にメッセージを表示
+    const optimisticMessage: MessageItem = {
+      id: `temp-${Date.now()}`,
+      conversationId: selectedConversationId,
+      senderId: currentUser.id,
+      body: composer.trim(),
+      language: currentUser.role === "WORKER" ? "vi" : "ja",
+      type: "TEXT" as const,
+      contentUrl: null,
+      metadata: null,
+      createdAt: new Date().toISOString(),
+      sender: {
+        id: currentUser.id,
+        name: currentUser.name,
+        role: currentUser.role,
+      },
+      llmArtifact: null,
+    }
+
+    const messageToSend = composer.trim()
+    setMessages((current) => [...current, optimisticMessage])
+    setComposer("")
+
     try {
       const res = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
         method: "POST",
@@ -348,7 +372,7 @@ function ManagerChatDashboard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          body: composer.trim(),
+          body: messageToSend,
           language: currentUser.role === "WORKER" ? "vi" : "ja",
         }),
       })
@@ -358,8 +382,12 @@ function ManagerChatDashboard({
       }
 
       const data = await readJson<{ message: MessageItem }>(res)
-      setMessages((current) => [...current, data.message])
-      setComposer("")
+
+      // 楽観的メッセージを実際のメッセージで置き換え
+      setMessages((current) =>
+        current.map((msg) => (msg.id === optimisticMessage.id ? data.message : msg))
+      )
+
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === selectedConversationId
@@ -374,6 +402,13 @@ function ManagerChatDashboard({
     } catch (error) {
       console.error(error)
       setSendError("メッセージの送信に失敗しました。")
+
+      // エラー時は楽観的メッセージを削除
+      setMessages((current) =>
+        current.filter((msg) => msg.id !== optimisticMessage.id)
+      )
+      // メッセージを復元
+      setComposer(messageToSend)
     } finally {
       setSending(false)
     }
@@ -430,7 +465,7 @@ function ManagerChatDashboard({
       )
     } catch (error) {
       console.error(error)
-      setRegenerateError("AI提案の生成に失敗しました。時間をおいて再実行してください。")
+      setRegenerateError("AI返信の生成に失敗しました。時間をおいて再実行してください。")
     } finally {
       setRegeneratingSuggestions(false)
     }
@@ -464,7 +499,7 @@ function ManagerChatDashboard({
     >
       <AppSidebar />
 
-      <section className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_400px]">
+      <section className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_420px] xl:grid-cols-[320px_minmax(0,1fr)_560px] 2xl:grid-cols-[320px_minmax(0,1fr)_720px]">
         <div className="flex h-full min-h-0 flex-col border-b border-r bg-white md:border-b-0">
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">相談者一覧</p>
@@ -556,6 +591,7 @@ function ManagerChatDashboard({
               : null
           }
           segments={segments}
+          preferredLanguage={preferredLanguage}
         />
       </section>
     </div>
@@ -1114,7 +1150,7 @@ async function readJson<T>(res: Response): Promise<T> {
 type ManagerInsightsPanelProps = {
   conversation: (ConversationDetail & { messages: MessageItem[] }) | null
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
-  suggestions: Array<{ content: string; tone?: string; language?: string }>
+  suggestions: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
   onSelectSuggestion: (content: string) => void
   onFocusComposer: () => void
   onRegenerateSuggestions: () => void
@@ -1127,6 +1163,7 @@ type ManagerInsightsPanelProps = {
   onNewTagChange: (value: string) => void
   contact: WorkerOption | null
   segments: ConversationSegment[]
+  preferredLanguage: string
 }
 
 function ManagerInsightsPanel({
@@ -1145,6 +1182,7 @@ function ManagerInsightsPanel({
   onNewTagChange,
   contact,
   segments,
+  preferredLanguage,
 }: ManagerInsightsPanelProps) {
   const toneLabelMap: Record<string, string> = {
     question: "質問",
@@ -1162,11 +1200,11 @@ function ManagerInsightsPanel({
   const contactAddress = conversation ? conversation.group.name : "未登録"
 
   return (
-    <aside className="hidden h-full min-h-0 w-full overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex">
+    <aside className="hidden h-full min-h-0 w-full overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex md:resize-x" style={{ minWidth: '320px', maxWidth: '80vw' }}>
       <div className="flex h-full w-full flex-col gap-6 xl:flex-row">
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
+            <h2 className="text-sm font-semibold text-slate-800">AI返信</h2>
             <Button
               variant="outline"
               size="sm"
@@ -1182,7 +1220,7 @@ function ManagerInsightsPanel({
           </div>
           <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
             {suggestions.length === 0 ? (
-              <p className="text-xs text-muted-foreground">AI提案はまだありません。メッセージを受信すると自動生成されます。</p>
+              <p className="text-xs text-muted-foreground">AI返信はまだありません。メッセージを受信すると自動生成されます。</p>
             ) : (
               suggestions.map((suggestion, index) => {
                 const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
@@ -1211,6 +1249,14 @@ function ManagerInsightsPanel({
                               <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
                             </div>
                           ) : null}
+                          {suggestion.translation && suggestion.language !== preferredLanguage ? (
+                            <div className="border-t border-slate-200 pt-3 text-slate-500">
+                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                {suggestion.translationLang ?? "翻訳"}
+                              </p>
+                              <p className="whitespace-pre-wrap text-xs leading-relaxed">{suggestion.translation}</p>
+                            </div>
+                          ) : null}
                         </div>
                       </CardContent>
                     </Card>
@@ -1225,7 +1271,7 @@ function ManagerInsightsPanel({
               自分で入力する
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              AI提案を選択するか、自分で入力して返信を作成してください。
+              AI返信を選択するか、自分で入力して返信を作成してください。
             </p>
           </div>
         </section>
@@ -1233,7 +1279,7 @@ function ManagerInsightsPanel({
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
         {conversation ? (
-          <div className="mt-4 space-y-5 text-sm text-slate-700">
+          <div className="mt-4 space-y-5 overflow-y-auto text-sm text-slate-700">
             <div className="flex items-center gap-3">
               <Avatar className="h-12 w-12">
                 <AvatarFallback>{getInitials(conversation.worker.name)}</AvatarFallback>
@@ -1389,7 +1435,7 @@ function ManagerInsightsPanel({
           </div>
         ) : (
           <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-muted-foreground">
-            相談者を選択すると、AI提案と相談者情報がここに表示されます。
+            相談者を選択すると、AI返信と相談者情報がここに表示されます。
           </div>
         )}
         </section>

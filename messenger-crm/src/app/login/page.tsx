@@ -5,12 +5,13 @@ import { auth } from "@/auth"
 import { LoginForm } from "./login-form"
 
 type LoginPageProps = {
-  searchParams?: Record<string, string | string[] | undefined>
+  searchParams?: Promise<Record<string, string | string[] | undefined>>
 }
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const session = await auth()
-  const callbackParam = searchParams?.callbackUrl
+  const params = await searchParams
+  const callbackParam = params?.callbackUrl
   const callbackUrl = Array.isArray(callbackParam) ? callbackParam[0] : callbackParam
 
   if (session?.user) {

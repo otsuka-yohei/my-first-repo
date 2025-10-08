@@ -7,7 +7,7 @@ import {
 } from "@/server/services/segment"
 
 interface RouteParams {
-  params: { conversationId: string }
+  params: Promise<{ conversationId: string }>
 }
 
 export async function GET(_: NextRequest, { params }: RouteParams) {
@@ -17,9 +17,11 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
+
   try {
     const segments = await getConversationSegments({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
     })
 
@@ -38,9 +40,11 @@ export async function POST(_: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
+
   try {
     const segments = await regenerateConversationSegments({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
     })
 

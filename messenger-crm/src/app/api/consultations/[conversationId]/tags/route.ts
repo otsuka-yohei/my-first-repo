@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { generateConsultationTags } from "@/server/services/consultation"
 
 interface RouteParams {
-  params: { conversationId: string }
+  params: Promise<{ conversationId: string }>
 }
 
 export async function POST(_: NextRequest, { params }: RouteParams) {
@@ -14,9 +14,11 @@ export async function POST(_: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
+
   try {
     const result = await generateConsultationTags({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
     })
 

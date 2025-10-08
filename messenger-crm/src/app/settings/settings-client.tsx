@@ -2,6 +2,7 @@
 
 import { ChangeEvent, useEffect, useRef, useState } from "react"
 import { useFormStatus } from "react-dom"
+import { UserRole } from "@prisma/client"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -20,22 +21,52 @@ const LANGUAGE_OPTIONS = [
 
 const LANGUAGE_STORAGE_KEY = "preferredLanguage"
 
-export default function SettingsClient() {
-  const [displayName, setDisplayName] = useState("山田 太郎")
-  const [language, setLanguage] = useState("ja")
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+const ROLE_LABELS: Record<UserRole, string> = {
+  SYSTEM_ADMIN: "システム管理者",
+  AREA_MANAGER: "エリアマネージャー",
+  MANAGER: "マネージャー",
+  WORKER: "ワーカー",
+}
+
+const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
+  SYSTEM_ADMIN: "システム全体の管理が可能です。",
+  AREA_MANAGER: "複数グループの管理が可能です。",
+  MANAGER: "所属グループのメンバー管理や相談のエスカレーションが可能です。",
+  WORKER: "自分の相談のみ閲覧・対応できます。",
+}
+
+interface CurrentUser {
+  id: string
+  name: string
+  email: string
+  role: UserRole
+  locale: string
+  avatarUrl?: string | null
+}
+
+interface SettingsClientProps {
+  currentUser: CurrentUser
+}
+
+export default function SettingsClient({ currentUser }: SettingsClientProps) {
+  const [displayName, setDisplayName] = useState(currentUser.name)
+  const [language, setLanguage] = useState(currentUser.locale)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(currentUser.avatarUrl || null)
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [avatarName, setAvatarName] = useState<string | null>(null)
   const [profileMessage, setProfileMessage] = useState<string | null>(null)
   const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null)
+  const [isProfileSaving, setIsProfileSaving] = useState(false)
+  const [isPreferenceSaving, setIsPreferenceSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     return () => {
-      if (avatarPreview) {
+      if (avatarPreview && avatarPreview !== currentUser.avatarUrl) {
         URL.revokeObjectURL(avatarPreview)
       }
     }
-  }, [avatarPreview])
+  }, [avatarPreview, currentUser.avatarUrl])
 
   useEffect(() => {
     if (!profileMessage) return
@@ -71,26 +102,118 @@ export default function SettingsClient() {
       return
     }
 
+    // ファイルサイズチェック (4MB)
+    if (file.size > 4 * 1024 * 1024) {
+      setProfileMessage("画像ファイルは4MB以内にしてください。")
+      return
+    }
+
+    setAvatarFile(file)
     setAvatarName(file.name)
     setAvatarPreview((prev) => {
-      if (prev) {
+      if (prev && prev !== currentUser.avatarUrl) {
         URL.revokeObjectURL(prev)
       }
       return URL.createObjectURL(file)
     })
   }
 
-  function handleProfileSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleProfileSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setProfileMessage("プロフィールを保存しました。実際の保存処理は実装準備中です。")
+    setIsProfileSaving(true)
+    setProfileMessage(null)
+
+    try {
+      // プロフィール更新（名前のみ - アバター画像は現時点ではプレースホルダーURL）
+      const updateData: { name?: string; avatarUrl?: string } = {}
+
+      if (displayName.trim() !== currentUser.name) {
+        updateData.name = displayName.trim()
+      }
+
+      // アバター画像がアップロードされた場合
+      // TODO: 実際のファイルアップロード処理（S3など）を実装する必要があります
+      // 現時点では、ファイルが選択された場合はプレビューURLのみ表示
+      if (avatarFile) {
+        // 本番環境では、ここでファイルをアップロードし、そのURLを取得します
+        // updateData.avatarUrl = await uploadAvatar(avatarFile)
+        setProfileMessage("アバター画像のアップロードは現在準備中です。名前のみ保存されました。")
+      }
+
+      if (Object.keys(updateData).length === 0) {
+        setProfileMessage("変更がありません。")
+        setIsProfileSaving(false)
+        return
+      }
+
+      const response = await fetch(`/api/users/${currentUser.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updateData),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "プロフィールの保存に失敗しました。")
+      }
+
+      await response.json()
+      setProfileMessage(avatarFile ? profileMessage : "プロフィールを保存しました。")
+
+      // ページをリロードして最新の情報を反映
+      if (!avatarFile) {
+        setTimeout(() => {
+          window.location.reload()
+        }, 1000)
+      }
+    } catch (error) {
+      console.error("Failed to save profile:", error)
+      setProfileMessage(error instanceof Error ? error.message : "プロフィールの保存に失敗しました。")
+    } finally {
+      setIsProfileSaving(false)
+    }
   }
 
-  function handlePreferenceSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handlePreferenceSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+    setIsPreferenceSaving(true)
+    setPreferenceMessage(null)
+
+    try {
+      if (language === currentUser.locale) {
+        setPreferenceMessage("変更がありません。")
+        setIsPreferenceSaving(false)
+        return
+      }
+
+      const response = await fetch(`/api/users/${currentUser.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale: language }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "言語設定の保存に失敗しました。")
+      }
+
+      // localStorageにも保存
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+      }
+
+      setPreferenceMessage("言語設定を保存しました。")
+
+      // ページをリロードして最新の情報を反映
+      setTimeout(() => {
+        window.location.reload()
+      }, 1000)
+    } catch (error) {
+      console.error("Failed to save language preference:", error)
+      setPreferenceMessage(error instanceof Error ? error.message : "言語設定の保存に失敗しました。")
+    } finally {
+      setIsPreferenceSaving(false)
     }
-    setPreferenceMessage("言語設定を保存しました。実際の保存処理は実装準備中です。")
   }
 
   return (
@@ -145,10 +268,16 @@ export default function SettingsClient() {
               </div>
 
               <div className="flex justify-end">
-                <Button type="submit">プロフィールを保存</Button>
+                <Button type="submit" disabled={isProfileSaving}>
+                  {isProfileSaving ? "保存中..." : "プロフィールを保存"}
+                </Button>
               </div>
 
-              {profileMessage ? <p className="text-xs text-muted-foreground">{profileMessage}</p> : null}
+              {profileMessage ? (
+                <p className={`text-xs ${profileMessage.includes("失敗") || profileMessage.includes("準備中") ? "text-red-500" : "text-muted-foreground"}`}>
+                  {profileMessage}
+                </p>
+              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -178,9 +307,15 @@ export default function SettingsClient() {
                 現在のUIは {LANGUAGE_OPTIONS.find((item) => item.value === language)?.label ?? ""} で表示されます。
               </div>
               <div className="flex justify-end">
-                <Button type="submit">言語設定を保存</Button>
+                <Button type="submit" disabled={isPreferenceSaving}>
+                  {isPreferenceSaving ? "保存中..." : "言語設定を保存"}
+                </Button>
               </div>
-              {preferenceMessage ? <p className="text-xs text-muted-foreground">{preferenceMessage}</p> : null}
+              {preferenceMessage ? (
+                <p className={`text-xs ${preferenceMessage.includes("失敗") ? "text-red-500" : "text-muted-foreground"}`}>
+                  {preferenceMessage}
+                </p>
+              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -192,8 +327,8 @@ export default function SettingsClient() {
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span>あなたのロール:</span>
-          <Badge variant="secondary">MANAGER</Badge>
-          <span>所属グループのメンバー管理や相談のエスカレーションが可能です。</span>
+          <Badge variant="secondary">{ROLE_LABELS[currentUser.role]}</Badge>
+          <span>{ROLE_DESCRIPTIONS[currentUser.role]}</span>
         </CardContent>
       </Card>
 

@@ -15,7 +15,7 @@ const postSchema = z.object({
 })
 
 type RouteParams = {
-  params: { conversationId: string }
+  params: Promise<{ conversationId: string }>
 }
 
 export async function GET(_: NextRequest, { params }: RouteParams) {
@@ -25,9 +25,11 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
+
   try {
     const conversation = await getConversationWithMessages({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
     })
 
@@ -45,6 +47,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
   const json = await req.json()
   const parsed = postSchema.safeParse(json)
 
@@ -54,7 +57,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
   try {
     const message = await appendMessage({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
       body: parsed.data.body,
       language: parsed.data.language,

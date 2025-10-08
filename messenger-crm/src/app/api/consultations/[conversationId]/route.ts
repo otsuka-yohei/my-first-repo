@@ -8,7 +8,7 @@ import {
 } from "@/server/services/consultation"
 
 interface RouteParams {
-  params: { conversationId: string }
+  params: Promise<{ conversationId: string }>
 }
 
 export async function GET(_: NextRequest, { params }: RouteParams) {
@@ -18,9 +18,11 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
+
   try {
     const consultation = await getConsultationCase({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
     })
 
@@ -38,6 +40,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { conversationId } = await params
   const json = await req.json()
   const parsed = consultationUpdateSchema.safeParse(json)
 
@@ -47,7 +50,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
   try {
     const consultation = await upsertConsultationCase({
-      conversationId: params.conversationId,
+      conversationId,
       user: { id: session.user.id, role: session.user.role },
       data: parsed.data,
     })
