@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { ChangeEvent, useEffect, useRef, useState } from "react"
 import { useFormStatus } from "react-dom"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -17,6 +17,8 @@ const LANGUAGE_OPTIONS = [
   { value: "vi", label: "ベトナム語" },
   { value: "en", label: "英語" },
 ]
+
+const LANGUAGE_STORAGE_KEY = "preferredLanguage"
 
 export default function SettingsClient() {
   const [displayName, setDisplayName] = useState("山田 太郎")
@@ -47,6 +49,22 @@ export default function SettingsClient() {
     return () => window.clearTimeout(timer)
   }, [preferenceMessage])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const storedLanguage = window.localStorage.getItem(LANGUAGE_STORAGE_KEY)
+    if (storedLanguage) {
+      setLanguage(storedLanguage)
+    }
+  }, [])
+
+  function handleLanguageChange(event: ChangeEvent<HTMLSelectElement>) {
+    const value = event.target.value
+    setLanguage(value)
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, value)
+    }
+  }
+
   function handleAvatarChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) {
@@ -69,11 +87,14 @@ export default function SettingsClient() {
 
   function handlePreferenceSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+    }
     setPreferenceMessage("言語設定を保存しました。実際の保存処理は実装準備中です。")
   }
 
   return (
-    <div className="flex min-h-full flex-col gap-8 bg-muted/20 p-10">
+    <div className="flex min-h-full flex-1 flex-col gap-8 bg-muted/20 p-10">
       <header className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">個人設定</h1>
         <p className="text-sm text-muted-foreground">
@@ -143,7 +164,7 @@ export default function SettingsClient() {
                 <select
                   id="language"
                   value={language}
-                  onChange={(event) => setLanguage(event.target.value)}
+                  onChange={handleLanguageChange}
                   className="w-full rounded-md border bg-white p-2 text-sm"
                 >
                   {LANGUAGE_OPTIONS.map((option) => (

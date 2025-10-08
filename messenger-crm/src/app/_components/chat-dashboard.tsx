@@ -79,6 +79,35 @@ type WorkerOption = {
   groupIds: string[]
 }
 
+const DEFAULT_LANGUAGE = "ja"
+
+function usePreferredLanguage(defaultLanguage = DEFAULT_LANGUAGE) {
+  const [language, setLanguage] = useState(defaultLanguage)
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const stored = window.localStorage.getItem("preferredLanguage")
+    if (stored) {
+      setLanguage(stored)
+    }
+  }, [defaultLanguage])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    function handleStorage(event: StorageEvent) {
+      if (event.key === "preferredLanguage") {
+        setLanguage(event.newValue ?? defaultLanguage)
+      }
+    }
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [defaultLanguage])
+
+  return language
+}
+
+type DashboardViewProps = ChatDashboardProps & { preferredLanguage: string }
+
 type ChatDashboardProps = {
   initialConversations: ConversationSummary[]
   availableGroups: GroupOption[]
@@ -98,11 +127,12 @@ const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
 }
 
 export function ChatDashboard(props: ChatDashboardProps) {
+  const preferredLanguage = usePreferredLanguage()
   if (props.currentUser.role === "WORKER") {
-    return <WorkerChatDashboard {...props} />
+    return <WorkerChatDashboard {...props} preferredLanguage={preferredLanguage} />
   }
 
-  return <ManagerChatDashboard {...props} />
+  return <ManagerChatDashboard {...props} preferredLanguage={preferredLanguage} />
 }
 
 // -----------------------------------------------------------------------------
@@ -114,7 +144,8 @@ function ManagerChatDashboard({
   availableGroups: _availableGroups,
   availableWorkers,
   currentUser,
-}: ChatDashboardProps) {
+  preferredLanguage,
+}: DashboardViewProps) {
   const [conversations, setConversations] = useState(initialConversations)
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
@@ -338,7 +369,10 @@ function ManagerChatDashboard({
   }
 
   return (
-    <div className="flex h-screen flex-1 overflow-hidden bg-[#f4f7fb]">
+    <div
+      className="flex h-screen flex-1 overflow-y-auto bg-[#f4f7fb] lg:overflow-hidden"
+      style={{ height: "100dvh" }}
+    >
       <AppSidebar />
 
       <section className="grid h-full flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_400px]">
@@ -399,6 +433,7 @@ function ManagerChatDashboard({
             consultation={consultation}
             messagesRef={messagesRef}
             composerRef={composerRef}
+            preferredLanguage={preferredLanguage}
           />
         </div>
 
@@ -442,7 +477,8 @@ function WorkerChatDashboard({
   initialConversations,
   availableWorkers,
   currentUser,
-}: ChatDashboardProps) {
+  preferredLanguage,
+}: DashboardViewProps) {
   const router = useRouter()
   const managerOptions = useMemo(
     () => availableWorkers.filter((worker) => worker.id !== currentUser.id),
@@ -679,8 +715,11 @@ function WorkerChatDashboard({
   }
 
   return (
-    <div className="flex h-screen flex-1 overflow-hidden bg-[#f4f7fb]">
-      <div className="flex w-full lg:max-w-[320px] lg:flex-col lg:border-r lg:bg-white">
+    <div
+      className="flex h-screen flex-1 overflow-y-auto bg-[#f4f7fb] lg:overflow-hidden"
+      style={{ height: "100dvh" }}
+    >
+      <div className="flex h-full min-h-0 w-full lg:max-w-[320px] lg:flex-col lg:border-r lg:bg-white">
         <div className="flex w-full items-center justify-between bg-white px-4 py-4 lg:hidden">
           <div className="flex gap-3">
             <Button
@@ -758,7 +797,7 @@ function WorkerChatDashboard({
         </div>
       </div>
 
-      <div className={`flex flex-1 flex-col ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}>
+        <div className={`flex h-full min-h-0 flex-1 flex-col ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}>
         <div className="hidden items-center justify-end gap-3 bg-white px-4 py-3 shadow-sm lg:flex">
           <Button
             variant="outline"
@@ -785,6 +824,7 @@ function WorkerChatDashboard({
             suggestions={[]}
             consultation={conversationDetail?.consultation ?? null}
             messagesRef={messagesRef}
+            preferredLanguage={preferredLanguage}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center bg-slate-50">
@@ -817,6 +857,7 @@ type ChatViewProps = {
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
   messagesRef?: React.RefObject<HTMLDivElement>
   composerRef?: React.RefObject<HTMLTextAreaElement>
+  preferredLanguage: string
 }
 
 function ChatView({
@@ -833,6 +874,7 @@ function ChatView({
   consultation: _unusedConsultation,
   messagesRef,
   composerRef,
+  preferredLanguage,
 }: ChatViewProps) {
   const internalMessagesRef = useRef<HTMLDivElement | null>(null)
   const mergedRef = messagesRef ?? internalMessagesRef
@@ -840,6 +882,8 @@ function ChatView({
   const textareaRef = composerRef ?? internalComposerRef
   void _unusedSuggestions
   void _unusedConsultation
+
+  const messagePlaceholder = getMessagePlaceholder(preferredLanguage, conversation?.worker.locale)
 
   useEffect(() => {
     const container = mergedRef.current
@@ -913,19 +957,24 @@ function ChatView({
           </div>
           <div className="border-t bg-white px-6 py-4">
             <form onSubmit={onSend} className="space-y-3">
-              <Textarea
-                placeholder="AI提案を選択するか自分で入力してください"
-                value={composer}
-                onChange={(event) => onComposerChange(event.target.value)}
-                rows={3}
-                ref={textareaRef}
-              />
-              {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
-              <div className="flex items-center justify-end gap-3">
-                <Button type="submit" disabled={sending || !composer.trim()}>
+              <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end">
+                <Textarea
+                  placeholder={messagePlaceholder}
+                  value={composer}
+                  onChange={(event) => onComposerChange(event.target.value)}
+                  rows={3}
+                  ref={textareaRef}
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  type="submit"
+                  disabled={sending || !composer.trim()}
+                  className="w-full shrink-0 sm:w-28"
+                >
                   {sending ? "送信中..." : "送信"}
                 </Button>
               </div>
+              {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
             </form>
           </div>
         </>
@@ -1205,6 +1254,34 @@ function splitSuggestionContent(content: string) {
   }
 
   return { primary: normalized, secondary: "" }
+}
+
+const MESSAGE_PLACEHOLDERS: Record<string, string> = {
+  ja: "メッセージを書く",
+  vi: "Viết tin nhắn",
+  en: "Write a message",
+  id: "Tulis pesan",
+  tl: "Mag-type ng mensahe",
+  fil: "Mag-type ng mensahe",
+}
+
+function resolvePlaceholder(code: string | null | undefined) {
+  if (!code) return null
+  const normalized = code.toLowerCase()
+  if (normalized.startsWith("vi")) return MESSAGE_PLACEHOLDERS.vi
+  if (normalized.startsWith("en")) return MESSAGE_PLACEHOLDERS.en
+  if (normalized.startsWith("id")) return MESSAGE_PLACEHOLDERS.id
+  if (normalized.startsWith("tl") || normalized.startsWith("fil")) return MESSAGE_PLACEHOLDERS.tl
+  if (normalized.startsWith("ja")) return MESSAGE_PLACEHOLDERS.ja
+  return null
+}
+
+function getMessagePlaceholder(preferredLanguage: string, fallback?: string | null) {
+  return (
+    resolvePlaceholder(preferredLanguage) ??
+    resolvePlaceholder(fallback) ??
+    MESSAGE_PLACEHOLDERS[DEFAULT_LANGUAGE]
+  )
 }
 
 type ConversationTag = {
