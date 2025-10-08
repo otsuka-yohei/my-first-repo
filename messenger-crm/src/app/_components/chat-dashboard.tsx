@@ -163,6 +163,8 @@ function ManagerChatDashboard({
   const [removedTags, setRemovedTags] = useState<Record<string, string[]>>({})
   const [customTags, setCustomTags] = useState<Record<string, string[]>>({})
   const [tagDraft, setTagDraft] = useState("")
+  const [regeneratingSuggestions, setRegeneratingSuggestions] = useState(false)
+  const [regenerateError, setRegenerateError] = useState<string | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workerDirectory = useMemo(() => {
@@ -219,7 +221,7 @@ function ManagerChatDashboard({
                   status: conversation.status,
                   consultation: conversation.consultation ?? item.consultation,
                   lastMessage,
-                  updatedAt: toIsoString(conversation.updatedAt),
+                  updatedAt: toIsoString(item.updatedAt),
                 }
               : item,
           ),
@@ -246,6 +248,8 @@ function ManagerChatDashboard({
 
   useEffect(() => {
     setTagDraft("")
+    setRegenerateError(null)
+    setRegeneratingSuggestions(false)
   }, [selectedConversationId])
 
   useEffect(() => {
@@ -368,6 +372,33 @@ function ManagerChatDashboard({
     })
   }
 
+  async function handleRegenerateSuggestions() {
+    if (!selectedConversationId) return
+    setRegeneratingSuggestions(true)
+    setRegenerateError(null)
+    try {
+      const res = await fetch(`/api/conversations/${selectedConversationId}/suggestions`, {
+        method: "POST",
+        cache: "no-store",
+      })
+
+      if (!res.ok) {
+        const errorPayload = await res.json().catch(() => ({}))
+        throw new Error(errorPayload.error ?? "Failed to regenerate suggestions")
+      }
+
+      const data = await readJson<{ message: MessageItem }>(res)
+      setMessages((current) =>
+        current.map((message) => (message.id === data.message.id ? data.message : message)),
+      )
+    } catch (error) {
+      console.error(error)
+      setRegenerateError("AI提案の生成に失敗しました。時間をおいて再実行してください。")
+    } finally {
+      setRegeneratingSuggestions(false)
+    }
+  }
+
   return (
     <div
       className="flex min-h-0 flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
@@ -446,6 +477,9 @@ function ManagerChatDashboard({
             composerRef.current?.focus()
           }}
           onFocusComposer={() => composerRef.current?.focus()}
+          onRegenerateSuggestions={handleRegenerateSuggestions}
+          regeneratingSuggestions={regeneratingSuggestions}
+          regenerateError={regenerateError}
           tags={selectedConversationTags}
           onRemoveTag={(tag) => {
             if (!selectedConversationId) return
@@ -561,7 +595,7 @@ function WorkerChatDashboard({
                   status: conversation.status,
                   consultation: conversation.consultation ?? item.consultation,
                   lastMessage,
-                  updatedAt: toIsoString(conversation.updatedAt),
+                  updatedAt: toIsoString(item.updatedAt),
                 }
               : item,
           ),
@@ -817,7 +851,11 @@ function WorkerChatDashboard({
 
         {selectedManager && selectedConversationId ? (
           <ChatView
-            conversation={conversationDetail}
+            conversation={
+              conversationDetail
+                ? { ...conversationDetail, messages }
+                : null
+            }
             messages={displayMessages}
             loadingMessages={loading}
             loadingError={error}
@@ -860,8 +898,8 @@ type ChatViewProps = {
   sendError: string | null
   suggestions: Array<{ content: string; tone?: string; language?: string }>
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
-  messagesRef?: React.RefObject<HTMLDivElement>
-  composerRef?: React.RefObject<HTMLTextAreaElement>
+  messagesRef?: React.RefObject<HTMLDivElement | null>
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>
   preferredLanguage: string
 }
 
@@ -1020,6 +1058,9 @@ type ManagerInsightsPanelProps = {
   suggestions: Array<{ content: string; tone?: string; language?: string }>
   onSelectSuggestion: (content: string) => void
   onFocusComposer: () => void
+  onRegenerateSuggestions: () => void
+  regeneratingSuggestions: boolean
+  regenerateError: string | null
   tags: ConversationTag[]
   onRemoveTag: (tag: ConversationTag) => void
   onAddTag: () => void
@@ -1034,6 +1075,9 @@ function ManagerInsightsPanel({
   suggestions,
   onSelectSuggestion,
   onFocusComposer,
+  onRegenerateSuggestions,
+  regeneratingSuggestions,
+  regenerateError,
   tags,
   onRemoveTag,
   onAddTag,
@@ -1057,71 +1101,75 @@ function ManagerInsightsPanel({
   const contactAddress = conversation ? conversation.group.name : "未登録"
 
   return (
-    <aside className="hidden h-full min-h-0 w-full flex-col gap-6 overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex">
-      <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1"
-            type="button"
-            onClick={onFocusComposer}
-          >
-            <Bot className="h-4 w-4" />
-            再生成
-          </Button>
-        </div>
-        <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
-          {suggestions.length === 0 ? (
-            <p className="text-xs text-muted-foreground">AI提案はまだありません。メッセージを受信すると自動生成されます。</p>
-          ) : (
-            suggestions.map((suggestion, index) => {
-              const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
-              const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
-              const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
-              const { primary, secondary } = splitSuggestionContent(suggestion.content)
-              return (
-                <button
-                  key={`${suggestion.content}-${index}`}
-                  type="button"
-                  onClick={() => onSelectSuggestion(suggestion.content)}
-                  className="w-full text-left"
-                >
-                  <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                    <CardContent className="space-y-3 p-4">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
-                          {toneLabel}
-                        </Badge>
-                        {languageLabel ? <span>{languageLabel}</span> : null}
-                      </div>
-                      <div className="space-y-3 text-sm leading-relaxed text-slate-700">
-                        <p className="whitespace-pre-wrap">{primary}</p>
-                        {secondary ? (
-                          <div className="border-t border-slate-200 pt-3 text-slate-600">
-                            <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
-                          </div>
-                        ) : null}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </button>
-              )
-            })
-          )}
-        </div>
-        <div className="mt-4 space-y-3">
-          <Button type="button" variant="secondary" className="w-full" onClick={onFocusComposer}>
-            自分で入力する
-          </Button>
-          <p className="text-center text-xs text-muted-foreground">
-            AI提案を選択するか、自分で入力して返信を作成してください。
-          </p>
-        </div>
-      </section>
+    <aside className="hidden h-full min-h-0 w-full overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex">
+      <div className="flex h-full w-full flex-col gap-6 xl:flex-row">
+        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-800">AI提案返信</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              type="button"
+              onClick={onRegenerateSuggestions}
+              disabled={regeneratingSuggestions}
+              aria-busy={regeneratingSuggestions}
+            >
+              <Bot className="h-4 w-4" />
+              {regeneratingSuggestions ? "生成中..." : "再生成"}
+            </Button>
+          </div>
+          <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+            {suggestions.length === 0 ? (
+              <p className="text-xs text-muted-foreground">AI提案はまだありません。メッセージを受信すると自動生成されます。</p>
+            ) : (
+              suggestions.map((suggestion, index) => {
+                const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
+                const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
+                const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
+                const { primary, secondary } = splitSuggestionContent(suggestion.content)
+                return (
+                  <button
+                    key={`${suggestion.content}-${index}`}
+                    type="button"
+                    onClick={() => onSelectSuggestion(suggestion.content)}
+                    className="w-full text-left"
+                  >
+                    <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
+                      <CardContent className="space-y-3 p-4">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
+                            {toneLabel}
+                          </Badge>
+                          {languageLabel ? <span>{languageLabel}</span> : null}
+                        </div>
+                        <div className="space-y-3 text-sm leading-relaxed text-slate-700">
+                          <p className="whitespace-pre-wrap">{primary}</p>
+                          {secondary ? (
+                            <div className="border-t border-slate-200 pt-3 text-slate-600">
+                              <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </button>
+                )
+              })
+            )}
+          </div>
+          {regenerateError ? <p className="mt-3 text-xs text-destructive">{regenerateError}</p> : null}
+          <div className="mt-4 space-y-3">
+            <Button type="button" variant="secondary" className="w-full" onClick={onFocusComposer}>
+              自分で入力する
+            </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              AI提案を選択するか、自分で入力して返信を作成してください。
+            </p>
+          </div>
+        </section>
 
-      <section className="min-h-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
         {conversation ? (
           <div className="mt-4 space-y-5 text-sm text-slate-700">
@@ -1236,7 +1284,8 @@ function ManagerInsightsPanel({
             相談者を選択すると、AI提案と相談者情報がここに表示されます。
           </div>
         )}
-      </section>
+        </section>
+      </div>
     </aside>
   )
 }

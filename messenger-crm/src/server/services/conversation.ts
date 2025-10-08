@@ -300,3 +300,85 @@ export async function appendMessage(params: {
 
   return createdMessage
 }
+
+export async function regenerateMessageSuggestions(params: {
+  user: SessionUser
+  conversationId: string
+}) {
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: params.conversationId },
+    include: {
+      group: { select: { id: true } },
+      worker: { select: { id: true, locale: true } },
+    },
+  })
+
+  if (!conversation) {
+    throw new Error("Conversation not found")
+  }
+
+  await ensureConversationAccess(params.user, conversation)
+
+  const latestWorkerMessage = await prisma.message.findFirst({
+    where: {
+      conversationId: params.conversationId,
+      sender: { role: UserRole.WORKER },
+    },
+    orderBy: { createdAt: "desc" },
+  })
+
+  if (!latestWorkerMessage) {
+    throw new Error("No worker message available for suggestions")
+  }
+
+  const targetLanguage = conversation.worker?.locale ?? "vi"
+
+  let enrichment: Awaited<ReturnType<typeof enrichMessageWithLLM>>
+  try {
+    enrichment = await enrichMessageWithLLM({
+      content: latestWorkerMessage.body,
+      language: latestWorkerMessage.language,
+      targetLanguage,
+    })
+  } catch (error) {
+    console.error("Failed to regenerate message suggestions", error)
+    throw new Error("Failed to regenerate message suggestions")
+  }
+
+  await prisma.messageLLMArtifact.upsert({
+    where: { messageId: latestWorkerMessage.id },
+    update: {
+      translation: enrichment.translation?.translation,
+      translationLang: targetLanguage,
+      suggestions: enrichment.suggestions,
+      extra: {
+        provider: enrichment.translation?.provider,
+        model: enrichment.translation?.model,
+      },
+    },
+    create: {
+      messageId: latestWorkerMessage.id,
+      translation: enrichment.translation?.translation,
+      translationLang: targetLanguage,
+      suggestions: enrichment.suggestions,
+      extra: {
+        provider: enrichment.translation?.provider,
+        model: enrichment.translation?.model,
+      },
+    },
+  })
+
+  const refreshedMessage = await prisma.message.findUnique({
+    where: { id: latestWorkerMessage.id },
+    include: {
+      sender: { select: { id: true, name: true, role: true } },
+      llmArtifact: true,
+    },
+  })
+
+  if (!refreshedMessage) {
+    throw new Error("Failed to load regenerated message")
+  }
+
+  return refreshedMessage
+}
