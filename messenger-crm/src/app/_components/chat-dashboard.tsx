@@ -370,7 +370,7 @@ function ManagerChatDashboard({
 
   return (
     <div
-      className="flex flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
+      className="flex min-h-0 flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
       style={{ minHeight: "100dvh" }}
     >
       <AppSidebar />
@@ -716,10 +716,10 @@ function WorkerChatDashboard({
 
   return (
     <div
-      className="flex flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
+      className="flex h-[100dvh] min-h-0 flex-1 flex-col overflow-hidden bg-[#f4f7fb] lg:flex-row"
       style={{ minHeight: "100dvh" }}
     >
-      <div className="flex h-full min-h-0 w-full lg:max-w-[320px] lg:flex-col lg:border-r lg:bg-white">
+      <div className="flex min-h-0 w-full flex-col lg:h-full lg:max-w-[320px] lg:border-r lg:bg-white">
         <div className="flex w-full items-center justify-between bg-white px-4 py-4 lg:hidden">
           <div className="flex gap-3">
             <Button
@@ -750,7 +750,11 @@ function WorkerChatDashboard({
           </Button>
         </div>
 
-        <div className={`flex-1 overflow-y-auto bg-white ${mobileView === "chat" ? "hidden lg:block" : "block"}`}>
+        <div
+          className={`bg-white ${
+            mobileView === "chat" ? "hidden lg:block" : "flex-1"
+          } lg:flex-1 lg:overflow-y-auto`}
+        >
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">担当者一覧</p>
             <Input
@@ -797,7 +801,11 @@ function WorkerChatDashboard({
         </div>
       </div>
 
-      <div className={`flex h-full min-h-0 flex-1 flex-col ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}>
+      <div
+        className={`flex min-h-0 flex-1 flex-col bg-white ${
+          mobileView === "list" ? "hidden lg:flex" : "flex"
+        }`}
+      >
         <div className="hidden items-center justify-end gap-3 bg-white px-4 py-3 shadow-sm lg:flex">
           <Button
             variant="outline"
@@ -893,7 +901,7 @@ function ChatView({
   }, [mergedRef, messages, conversation?.id])
 
   return (
-    <div className="flex h-full flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {conversation ? (
         <>
           <div className="border-b px-6 py-4">
@@ -902,7 +910,7 @@ function ChatView({
               <p className="text-xs text-muted-foreground">{getLocaleLabel(conversation.worker.locale)}</p>
             ) : null}
           </div>
-          <div ref={mergedRef} className="flex-1 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
+          <div ref={mergedRef} className="flex-1 min-h-0 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
             {loadingMessages ? (
               <p className="text-sm text-muted-foreground">読み込み中...</p>
             ) : loadingError ? (
