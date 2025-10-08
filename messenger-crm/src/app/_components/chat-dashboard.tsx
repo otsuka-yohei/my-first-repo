@@ -370,12 +370,12 @@ function ManagerChatDashboard({
 
   return (
     <div
-      className="flex h-screen flex-1 overflow-y-auto bg-[#f4f7fb] lg:overflow-hidden"
-      style={{ height: "100dvh" }}
+      className="flex flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
+      style={{ minHeight: "100dvh" }}
     >
       <AppSidebar />
 
-      <section className="grid h-full flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_400px]">
+      <section className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_400px]">
         <div className="flex h-full min-h-0 flex-col border-b border-r bg-white md:border-b-0">
           <div className="px-4 pb-4 pt-6">
             <p className="text-lg font-semibold">相談者一覧</p>
@@ -716,8 +716,8 @@ function WorkerChatDashboard({
 
   return (
     <div
-      className="flex h-screen flex-1 overflow-y-auto bg-[#f4f7fb] lg:overflow-hidden"
-      style={{ height: "100dvh" }}
+      className="flex flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
+      style={{ minHeight: "100dvh" }}
     >
       <div className="flex h-full min-h-0 w-full lg:max-w-[320px] lg:flex-col lg:border-r lg:bg-white">
         <div className="flex w-full items-center justify-between bg-white px-4 py-4 lg:hidden">
@@ -797,7 +797,7 @@ function WorkerChatDashboard({
         </div>
       </div>
 
-        <div className={`flex h-full min-h-0 flex-1 flex-col ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}>
+      <div className={`flex h-full min-h-0 flex-1 flex-col ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}>
         <div className="hidden items-center justify-end gap-3 bg-white px-4 py-3 shadow-sm lg:flex">
           <Button
             variant="outline"
@@ -955,7 +955,7 @@ function ChatView({
               })
             )}
           </div>
-          <div className="border-t bg-white px-6 py-4">
+          <div className="border-t bg-white px-6 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
             <form onSubmit={onSend} className="space-y-3">
               <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end">
                 <Textarea
