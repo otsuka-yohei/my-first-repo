@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { AuthorizationError } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
+import { generateConversationTags } from "@/server/llm/service"
 
 import { ensureConversationAccess } from "./conversation"
 
@@ -121,4 +122,50 @@ export async function upsertConsultationCase(params: {
   })
 
   return result
+}
+
+export async function generateConsultationTags(params: {
+  user: SessionUser
+  conversationId: string
+}) {
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: params.conversationId },
+    include: {
+      messages: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          sender: { select: { role: true } },
+        },
+      },
+    },
+  })
+
+  if (!conversation) {
+    throw new Error("Conversation not found")
+  }
+
+  await ensureConversationAccess(params.user, conversation)
+
+  if (conversation.messages.length === 0) {
+    return {
+      category: "未分類",
+      tags: [],
+      summary: "メッセージがありません",
+    }
+  }
+
+  const messagesForLLM = conversation.messages.map((msg) => ({
+    body: msg.body,
+    language: msg.language,
+    senderRole: msg.sender.role,
+    createdAt: msg.createdAt,
+  }))
+
+  try {
+    const result = await generateConversationTags(messagesForLLM)
+    return result
+  } catch (error) {
+    console.error("Failed to generate consultation tags", error)
+    throw new Error("Failed to generate consultation tags")
+  }
 }

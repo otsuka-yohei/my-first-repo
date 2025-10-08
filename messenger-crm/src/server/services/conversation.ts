@@ -2,7 +2,7 @@ import { MessageType, UserRole } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation } from "@/server/llm/service"
 
 interface SessionUser {
   id: string
@@ -298,7 +298,58 @@ export async function appendMessage(params: {
     throw new Error("Failed to load created message")
   }
 
+  void regenerateConversationSegmentsInBackground(params.conversationId)
+
   return createdMessage
+}
+
+async function regenerateConversationSegmentsInBackground(conversationId: string) {
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        messages: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            sender: { select: { role: true } },
+          },
+        },
+      },
+    })
+
+    if (!conversation || conversation.messages.length === 0) {
+      return
+    }
+
+    const messagesForLLM = conversation.messages.map((msg) => ({
+      id: msg.id,
+      body: msg.body,
+      language: msg.language,
+      senderRole: msg.sender.role,
+      createdAt: msg.createdAt,
+    }))
+
+    const segments = await segmentConversation({ messages: messagesForLLM })
+
+    await prisma.$transaction(async (tx) => {
+      await tx.conversationSegment.deleteMany({
+        where: { conversationId },
+      })
+
+      await tx.conversationSegment.createMany({
+        data: segments.map((segment) => ({
+          conversationId,
+          title: segment.title,
+          summary: segment.summary,
+          messageIds: segment.messageIds,
+          startedAt: segment.startedAt,
+          endedAt: segment.endedAt,
+        })),
+      })
+    })
+  } catch (error) {
+    console.error("Failed to regenerate conversation segments in background", error)
+  }
 }
 
 export async function regenerateMessageSuggestions(params: {

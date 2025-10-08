@@ -99,17 +99,18 @@ model GroupMembership {
 }
 
 model Conversation {
-  id           String             @id @default(cuid())
-  group        Group              @relation(fields: [groupId], references: [id])
+  id           String                 @id @default(cuid())
+  group        Group                  @relation(fields: [groupId], references: [id])
   groupId      String
-  worker       User               @relation("ConversationOwner", fields: [workerId], references: [id])
+  worker       User                   @relation("ConversationOwner", fields: [workerId], references: [id])
   workerId     String
   subject      String?
-  status       ConversationStatus @default(ACTIVE)
+  status       ConversationStatus     @default(ACTIVE)
   messages     Message[]
   consultation ConsultationCase?
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  segments     ConversationSegment[]
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
 }
 
 model Message {
@@ -151,6 +152,21 @@ model ConsultationCase {
   closedAt       DateTime?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+}
+
+model ConversationSegment {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  conversationId String
+  title          String
+  summary        String?
+  messageIds     String[]
+  startedAt      DateTime
+  endedAt        DateTime
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([conversationId])
 }
 
 model AuditLog {

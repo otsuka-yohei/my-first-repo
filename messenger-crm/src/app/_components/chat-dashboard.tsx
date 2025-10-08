@@ -41,6 +41,15 @@ type ConsultationCase = {
   priority: CasePriority
 }
 
+type ConversationSegment = {
+  id: string
+  title: string
+  summary: string | null
+  messageIds: string[]
+  startedAt: string
+  endedAt: string
+}
+
 type ConversationSummary = {
   id: string
   subject: string | null
@@ -165,6 +174,9 @@ function ManagerChatDashboard({
   const [tagDraft, setTagDraft] = useState("")
   const [regeneratingSuggestions, setRegeneratingSuggestions] = useState(false)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
+  const [segments, setSegments] = useState<ConversationSegment[]>([])
+  const [loadingSegments, setLoadingSegments] = useState(false)
+  const [generatingSegments, setGeneratingSegments] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workerDirectory = useMemo(() => {
@@ -250,7 +262,32 @@ function ManagerChatDashboard({
     setTagDraft("")
     setRegenerateError(null)
     setRegeneratingSuggestions(false)
+    setSegments([])
+    setLoadingSegments(false)
+    setGeneratingSegments(false)
+
+    if (selectedConversationId) {
+      void loadSegments(selectedConversationId)
+    }
   }, [selectedConversationId])
+
+  async function loadSegments(conversationId: string) {
+    setLoadingSegments(true)
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/segments`, {
+        method: "GET",
+        cache: "no-store",
+      })
+      if (res.ok) {
+        const data = await res.json() as { segments: ConversationSegment[] }
+        setSegments(data.segments ?? [])
+      }
+    } catch (error) {
+      console.error("Failed to load segments", error)
+    } finally {
+      setLoadingSegments(false)
+    }
+  }
 
   useEffect(() => {
     const container = messagesRef.current
@@ -399,6 +436,27 @@ function ManagerChatDashboard({
     }
   }
 
+  async function handleGenerateSegments() {
+    if (!selectedConversationId) return
+    setGeneratingSegments(true)
+    try {
+      const res = await fetch(`/api/conversations/${selectedConversationId}/segments`, {
+        method: "POST",
+        cache: "no-store",
+      })
+      if (res.ok) {
+        const data = await res.json() as { segments: ConversationSegment[] }
+        setSegments(data.segments ?? [])
+      } else {
+        console.error("Failed to generate segments")
+      }
+    } catch (error) {
+      console.error("Failed to generate segments", error)
+    } finally {
+      setGeneratingSegments(false)
+    }
+  }
+
   return (
     <div
       className="flex min-h-0 flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
@@ -497,6 +555,7 @@ function ManagerChatDashboard({
               ? workerDirectory[selectedConversation.worker.id] ?? null
               : null
           }
+          segments={segments}
         />
       </section>
     </div>
@@ -1067,6 +1126,7 @@ type ManagerInsightsPanelProps = {
   newTag: string
   onNewTagChange: (value: string) => void
   contact: WorkerOption | null
+  segments: ConversationSegment[]
 }
 
 function ManagerInsightsPanel({
@@ -1084,6 +1144,7 @@ function ManagerInsightsPanel({
   newTag,
   onNewTagChange,
   contact,
+  segments,
 }: ManagerInsightsPanelProps) {
   const toneLabelMap: Record<string, string> = {
     question: "質問",
@@ -1267,6 +1328,53 @@ function ManagerInsightsPanel({
                 <p className="rounded-xl border border-dashed border-slate-200 p-3 text-[12px] text-slate-600">
                   {consultation.description}
                 </p>
+              </div>
+            ) : null}
+
+            {segments.length > 0 ? (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p className="font-semibold text-slate-700">過去の話題リスト</p>
+                <div className="space-y-2">
+                  {segments.map((segment, index) => (
+                    <div
+                      key={segment.id}
+                      className="rounded-lg border border-slate-200 bg-slate-50 p-3 transition hover:bg-slate-100"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs font-semibold text-slate-800">
+                          {index + 1}. {segment.title}
+                        </p>
+                        <Badge variant="secondary" className="shrink-0 text-[10px]">
+                          {segment.messageIds.length}件
+                        </Badge>
+                      </div>
+                      {segment.summary ? (
+                        <p className="mt-1 text-[11px] text-slate-600">{segment.summary}</p>
+                      ) : null}
+                      <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          <span className="inline-block h-1 w-1 rounded-full bg-slate-400" />
+                          {new Date(segment.startedAt).toLocaleString("ja-JP", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                        <span>〜</span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className="inline-block h-1 w-1 rounded-full bg-slate-400" />
+                          {new Date(segment.endedAt).toLocaleString("ja-JP", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
 

@@ -23,6 +23,8 @@ const envSchema = z.object({
   OPENAI_API_KEY: optionalString,
   GOOGLE_TRANSLATE_API_KEY: optionalString,
   GOOGLE_SUGGEST_API_KEY: optionalString,
+  GOOGLE_TAGGING_API_KEY: optionalString,
+  GOOGLE_SEGMENT_API_KEY: optionalString,
 })
 
 const rawEnv = {
@@ -33,6 +35,8 @@ const rawEnv = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   GOOGLE_TRANSLATE_API_KEY: process.env.GOOGLE_TRANSLATE_API_KEY,
   GOOGLE_SUGGEST_API_KEY: process.env.GOOGLE_SUGGEST_API_KEY,
+  GOOGLE_TAGGING_API_KEY: process.env.GOOGLE_TAGGING_API_KEY,
+  GOOGLE_SEGMENT_API_KEY: process.env.GOOGLE_SEGMENT_API_KEY,
 }
 
 const parsed = envSchema.safeParse(rawEnv)
