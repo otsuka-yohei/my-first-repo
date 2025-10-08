@@ -69,7 +69,7 @@ export default async function HomePage() {
   }))
 
   return (
-    <main className="flex min-h-[100dvh] flex-col bg-muted/20 lg:h-[100dvh]">
+    <main className="flex h-[100dvh] flex-col overflow-hidden bg-muted/20">
       <ChatDashboard
         initialConversations={initialConversations}
         availableGroups={availableGroups}

@@ -715,10 +715,7 @@ function WorkerChatDashboard({
   }
 
   return (
-    <div
-      className="flex h-[100dvh] min-h-0 flex-1 flex-col overflow-hidden bg-[#f4f7fb] lg:flex-row"
-      style={{ minHeight: "100dvh" }}
-    >
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#f4f7fb] lg:flex-row">
       <div className="flex min-h-0 w-full flex-col lg:h-full lg:max-w-[320px] lg:border-r lg:bg-white">
         <div className="flex w-full items-center justify-between bg-white px-4 py-4 lg:hidden">
           <div className="flex gap-3">
@@ -802,7 +799,7 @@ function WorkerChatDashboard({
       </div>
 
       <div
-        className={`flex min-h-0 flex-1 flex-col bg-white ${
+        className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-white ${
           mobileView === "list" ? "hidden lg:flex" : "flex"
         }`}
       >
