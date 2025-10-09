@@ -5,6 +5,7 @@ import { UserRole } from "@prisma/client"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
 
 interface Group {
   id: string
@@ -51,12 +52,26 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
   const [createGroupIds, setCreateGroupIds] = useState<string[]>([])
   const [createMessage, setCreateMessage] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  // 任意フィールド（ワーカーのみ）
+  const [createCountryOfOrigin, setCreateCountryOfOrigin] = useState("")
+  const [createDateOfBirth, setCreateDateOfBirth] = useState("")
+  const [createGender, setCreateGender] = useState("")
+  const [createAddress, setCreateAddress] = useState("")
+  const [createPhoneNumber, setCreatePhoneNumber] = useState("")
+  const [createJobDescription, setCreateJobDescription] = useState("")
+  const [createHireDate, setCreateHireDate] = useState("")
+  const [createNotes, setCreateNotes] = useState("")
 
   // グループ変更フォーム
   const [updateUserId, setUpdateUserId] = useState<string>("")
   const [updateGroupIds, setUpdateGroupIds] = useState<string[]>([])
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [isUpdating, setIsUpdating] = useState(false)
+
+  // CSVインポート
+  const [csvFile, setCsvFile] = useState<File | null>(null)
+  const [csvMessage, setCsvMessage] = useState<string | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -73,6 +88,12 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
     const timer = window.setTimeout(() => setUpdateMessage(null), 5000)
     return () => window.clearTimeout(timer)
   }, [updateMessage])
+
+  useEffect(() => {
+    if (!csvMessage) return
+    const timer = window.setTimeout(() => setCsvMessage(null), 5000)
+    return () => window.clearTimeout(timer)
+  }, [csvMessage])
 
   async function loadData() {
     setLoading(true)
@@ -120,17 +141,31 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
         return
       }
 
+      const payload: Record<string, unknown> = {
+        email: createEmail.trim(),
+        password: createPassword,
+        name: createName.trim(),
+        role: createRole,
+        groupIds: createGroupIds,
+        locale: "ja",
+      }
+
+      // ワーカーの場合のみ任意フィールドを追加
+      if (createRole === UserRole.WORKER) {
+        if (createCountryOfOrigin.trim()) payload.countryOfOrigin = createCountryOfOrigin.trim()
+        if (createDateOfBirth) payload.dateOfBirth = createDateOfBirth
+        if (createGender.trim()) payload.gender = createGender.trim()
+        if (createAddress.trim()) payload.address = createAddress.trim()
+        if (createPhoneNumber.trim()) payload.phoneNumber = createPhoneNumber.trim()
+        if (createJobDescription.trim()) payload.jobDescription = createJobDescription.trim()
+        if (createHireDate) payload.hireDate = createHireDate
+        if (createNotes.trim()) payload.notes = createNotes.trim()
+      }
+
       const response = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: createEmail.trim(),
-          password: createPassword,
-          name: createName.trim(),
-          role: createRole,
-          groupIds: createGroupIds,
-          locale: "ja",
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) {
@@ -144,6 +179,14 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
       setCreatePassword("")
       setCreateRole(UserRole.WORKER)
       setCreateGroupIds(groups.length > 0 ? [groups[0].id] : [])
+      setCreateCountryOfOrigin("")
+      setCreateDateOfBirth("")
+      setCreateGender("")
+      setCreateAddress("")
+      setCreatePhoneNumber("")
+      setCreateJobDescription("")
+      setCreateHireDate("")
+      setCreateNotes("")
 
       // ユーザー一覧を再読み込み
       await loadData()
@@ -228,6 +271,138 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
     }
   }
 
+  function handleDownloadTemplate() {
+    const headers = [
+      "名前*",
+      "メールアドレス*",
+      "パスワード*",
+      "ロール*",
+      "グループID*",
+      "出身国",
+      "生年月日",
+      "性別",
+      "住所",
+      "電話番号",
+      "業務内容",
+      "入社年月日",
+      "備考",
+    ]
+    const exampleRow = [
+      "山田太郎",
+      "yamada@example.com",
+      "password123",
+      "WORKER",
+      groups.length > 0 ? groups[0].id : "group-id-here",
+      "ベトナム",
+      "1990-01-01",
+      "男性",
+      "東京都渋谷区...",
+      "090-1234-5678",
+      "製造ライン作業",
+      "2024-01-01",
+      "個別面談の内容など",
+    ]
+
+    const csvContent = [headers.join(","), exampleRow.join(",")].join("\n")
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = "user_import_template.csv"
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleCsvImport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!csvFile) {
+      setCsvMessage("CSVファイルを選択してください。")
+      return
+    }
+
+    setIsImporting(true)
+    setCsvMessage(null)
+
+    try {
+      const text = await csvFile.text()
+      const lines = text.split("\n").filter((line) => line.trim())
+
+      if (lines.length < 2) {
+        throw new Error("CSVファイルにデータがありません。")
+      }
+
+      const headers = lines[0].split(",").map((h) => h.trim())
+      const rows = lines.slice(1)
+
+      let successCount = 0
+      let errorCount = 0
+      const errors: string[] = []
+
+      for (let i = 0; i < rows.length; i++) {
+        const values = rows[i].split(",").map((v) => v.trim())
+
+        if (values.length < 5) {
+          errors.push(`行${i + 2}: 必須フィールドが不足しています`)
+          errorCount++
+          continue
+        }
+
+        const [name, email, password, role, groupId, ...optionalFields] = values
+
+        try {
+          const payload: Record<string, unknown> = {
+            name,
+            email,
+            password,
+            role,
+            groupIds: [groupId],
+            locale: "ja",
+          }
+
+          // ワーカーの場合のみ任意フィールドを追加
+          if (role === "WORKER") {
+            if (optionalFields[0]) payload.countryOfOrigin = optionalFields[0]
+            if (optionalFields[1]) payload.dateOfBirth = optionalFields[1]
+            if (optionalFields[2]) payload.gender = optionalFields[2]
+            if (optionalFields[3]) payload.address = optionalFields[3]
+            if (optionalFields[4]) payload.phoneNumber = optionalFields[4]
+            if (optionalFields[5]) payload.jobDescription = optionalFields[5]
+            if (optionalFields[6]) payload.hireDate = optionalFields[6]
+            if (optionalFields[7]) payload.notes = optionalFields[7]
+          }
+
+          const response = await fetch("/api/users", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+
+          if (response.ok) {
+            successCount++
+          } else {
+            const errorData = await response.json()
+            errors.push(`行${i + 2} (${email}): ${errorData.error}`)
+            errorCount++
+          }
+        } catch (error) {
+          errors.push(`行${i + 2} (${email}): ${error instanceof Error ? error.message : "不明なエラー"}`)
+          errorCount++
+        }
+      }
+
+      setCsvMessage(
+        `インポート完了: 成功 ${successCount}件, 失敗 ${errorCount}件${errors.length > 0 ? `\n最初のエラー: ${errors[0]}` : ""}`
+      )
+      setCsvFile(null)
+      await loadData()
+    } catch (error) {
+      console.error("Failed to import CSV:", error)
+      setCsvMessage(error instanceof Error ? error.message : "CSVインポートに失敗しました。")
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center">
@@ -238,6 +413,37 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
 
   return (
     <div className="space-y-8 bg-muted/20 p-10">
+      <section className="rounded-2xl border bg-white p-8 shadow-sm">
+        <h1 className="text-2xl font-semibold">CSVインポート</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          CSVファイルから複数のユーザーを一括登録できます。
+        </p>
+        <div className="mt-6 flex flex-wrap items-center gap-4">
+          <Button onClick={handleDownloadTemplate} variant="outline">
+            テンプレートをダウンロード
+          </Button>
+          <form onSubmit={handleCsvImport} className="flex flex-1 items-center gap-3">
+            <Input
+              type="file"
+              accept=".csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+              className="max-w-xs"
+              disabled={isImporting}
+            />
+            <Button type="submit" disabled={isImporting || !csvFile}>
+              {isImporting ? "インポート中..." : "インポート"}
+            </Button>
+          </form>
+        </div>
+        {csvMessage && (
+          <p
+            className={`mt-4 whitespace-pre-line text-xs ${csvMessage.includes("失敗") || csvMessage.includes("してください") ? "text-red-500" : "text-green-600"}`}
+          >
+            {csvMessage}
+          </p>
+        )}
+      </section>
+
       <section className="rounded-2xl border bg-white p-8 shadow-sm">
         <h1 className="text-2xl font-semibold">ユーザー一覧</h1>
         <p className="mt-2 text-sm text-muted-foreground">
@@ -373,6 +579,120 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
                 )}
               </div>
             </div>
+
+            {createRole === UserRole.WORKER && (
+              <>
+                <div className="border-t pt-3">
+                  <p className="text-sm font-medium text-muted-foreground mb-3">任意情報（ワーカーのみ）</p>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-country">
+                    出身国
+                  </label>
+                  <Input
+                    id="create-country"
+                    value={createCountryOfOrigin}
+                    onChange={(e) => setCreateCountryOfOrigin(e.target.value)}
+                    placeholder="ベトナム"
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-dob">
+                    生年月日
+                  </label>
+                  <Input
+                    id="create-dob"
+                    type="date"
+                    value={createDateOfBirth}
+                    onChange={(e) => setCreateDateOfBirth(e.target.value)}
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-gender">
+                    性別
+                  </label>
+                  <Input
+                    id="create-gender"
+                    value={createGender}
+                    onChange={(e) => setCreateGender(e.target.value)}
+                    placeholder="男性 / 女性 / その他"
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-address">
+                    住所
+                  </label>
+                  <Input
+                    id="create-address"
+                    value={createAddress}
+                    onChange={(e) => setCreateAddress(e.target.value)}
+                    placeholder="東京都渋谷区..."
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-phone">
+                    電話番号
+                  </label>
+                  <Input
+                    id="create-phone"
+                    value={createPhoneNumber}
+                    onChange={(e) => setCreatePhoneNumber(e.target.value)}
+                    placeholder="090-1234-5678"
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-job">
+                    業務内容
+                  </label>
+                  <Input
+                    id="create-job"
+                    value={createJobDescription}
+                    onChange={(e) => setCreateJobDescription(e.target.value)}
+                    placeholder="製造ライン作業"
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-hire">
+                    入社年月日
+                  </label>
+                  <Input
+                    id="create-hire"
+                    type="date"
+                    value={createHireDate}
+                    onChange={(e) => setCreateHireDate(e.target.value)}
+                    className="mt-1"
+                    disabled={isCreating}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground" htmlFor="create-notes">
+                    備考
+                  </label>
+                  <Textarea
+                    id="create-notes"
+                    value={createNotes}
+                    onChange={(e) => setCreateNotes(e.target.value)}
+                    placeholder="個別面談の内容など..."
+                    className="mt-1"
+                    rows={3}
+                    disabled={isCreating}
+                  />
+                </div>
+              </>
+            )}
+
             <Button type="submit" className="w-full" disabled={isCreating}>
               {isCreating ? "登録中..." : "登録"}
             </Button>

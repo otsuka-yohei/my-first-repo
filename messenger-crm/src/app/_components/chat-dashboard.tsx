@@ -95,7 +95,7 @@ type ConversationDetail = {
   subject: string | null
   status: string
   group: { id: string; name: string }
-  worker: { id: string; name: string | null; locale: string | null }
+  worker: { id: string; name: string | null; locale: string | null; notes?: string | null }
   consultation: (ConsultationCase & { description?: string | null }) | null
 }
 
@@ -235,6 +235,8 @@ function ManagerChatDashboard({
   const [loadingSegments, setLoadingSegments] = useState(false)
   const [generatingSegments, setGeneratingSegments] = useState(false)
   const [initialSuggestions, setInitialSuggestions] = useState<Record<string, Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>>>({})
+  const [workerNotes, setWorkerNotes] = useState("")
+  const [savingNotes, setSavingNotes] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workerDirectory = useMemo(() => {
@@ -386,11 +388,12 @@ function ManagerChatDashboard({
     setSegments([])
     setLoadingSegments(false)
     setGeneratingSegments(false)
+    setWorkerNotes(selectedConversation?.worker?.notes ?? "")
 
     if (selectedConversationId) {
       void loadSegments(selectedConversationId)
     }
-  }, [selectedConversationId])
+  }, [selectedConversationId, selectedConversation?.worker?.notes])
 
   async function loadSegments(conversationId: string) {
     setLoadingSegments(true)
@@ -688,6 +691,36 @@ function ManagerChatDashboard({
     }
   }
 
+  async function handleSaveNotes(notes: string) {
+    if (!selectedConversation?.worker?.id) return
+    setSavingNotes(true)
+    try {
+      const res = await fetch(`/api/users/${selectedConversation.worker.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      })
+      if (!res.ok) {
+        throw new Error("Failed to save notes")
+      }
+      // 成功したら、selectedConversationを更新
+      setSelectedConversation(prev => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          worker: {
+            ...prev.worker,
+            notes,
+          },
+        }
+      })
+    } catch (error) {
+      console.error("Failed to save notes", error)
+    } finally {
+      setSavingNotes(false)
+    }
+  }
+
   return (
     <div
       className="flex min-h-0 flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
@@ -789,6 +822,10 @@ function ManagerChatDashboard({
           }
           segments={segments}
           preferredLanguage={preferredLanguage}
+          workerNotes={workerNotes}
+          onNotesChange={setWorkerNotes}
+          onSaveNotes={handleSaveNotes}
+          savingNotes={savingNotes}
         />
       </section>
     </div>
@@ -1430,6 +1467,10 @@ type ManagerInsightsPanelProps = {
   contact: WorkerOption | null
   segments: ConversationSegment[]
   preferredLanguage: string
+  workerNotes: string
+  onNotesChange: (value: string) => void
+  onSaveNotes: (notes: string) => void
+  savingNotes: boolean
 }
 
 function ManagerInsightsPanel({
@@ -1449,6 +1490,10 @@ function ManagerInsightsPanel({
   contact,
   segments,
   preferredLanguage,
+  workerNotes,
+  onNotesChange,
+  onSaveNotes,
+  savingNotes,
 }: ManagerInsightsPanelProps) {
   const toneLabelMap: Record<string, string> = {
     question: "質問",
@@ -1548,7 +1593,7 @@ function ManagerInsightsPanel({
         </section>
 
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>
+        <h2 className="text-sm font-semibold text-slate-800">ユーザー情報</h2>
         {conversation ? (
           <div className="mt-4 space-y-5 overflow-y-auto text-sm text-slate-700">
             <div className="flex items-center gap-3">
@@ -1702,6 +1747,21 @@ function ManagerInsightsPanel({
                 <p>メール: {contactEmail}</p>
                 <p>住所: {contactAddress}</p>
               </div>
+            </div>
+
+            <div className="space-y-2 text-xs text-muted-foreground">
+              <p className="font-semibold text-slate-700">備考</p>
+              <Textarea
+                placeholder="個別面談の内容などを入力..."
+                className="min-h-[100px] text-sm"
+                value={workerNotes}
+                onChange={(e) => onNotesChange(e.target.value)}
+                onBlur={() => onSaveNotes(workerNotes)}
+                disabled={savingNotes}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {savingNotes ? "保存中..." : "備考はAI返信のコンテキストとして使用されます。"}
+              </p>
             </div>
           </div>
         ) : (

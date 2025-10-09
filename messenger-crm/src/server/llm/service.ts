@@ -205,6 +205,7 @@ export interface EnhancedSuggestionRequest {
     phoneNumber?: string | null
     jobDescription?: string | null
     hireDate?: Date | null
+    notes?: string | null
   }
   groupInfo?: {
     name?: string | null
@@ -252,6 +253,9 @@ export async function generateSuggestedReplies(
     }
     if (request.workerInfo.address) {
       workerDetails.push(`住所: ${request.workerInfo.address}`)
+    }
+    if (request.workerInfo.notes) {
+      workerDetails.push(`備考: ${request.workerInfo.notes}`)
     }
 
     // グループ情報を構築
@@ -566,6 +570,7 @@ export async function enrichMessageWithLLM(params: {
     phoneNumber?: string | null
     jobDescription?: string | null
     hireDate?: Date | null
+    notes?: string | null
   }
   groupInfo?: {
     name?: string | null

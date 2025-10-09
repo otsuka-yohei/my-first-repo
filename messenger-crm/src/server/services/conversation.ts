@@ -99,7 +99,7 @@ export async function getConversationWithMessages(params: {
     where: { id: params.conversationId },
     include: {
       group: { select: { id: true, name: true } },
-      worker: { select: { id: true, name: true, locale: true } },
+      worker: { select: { id: true, name: true, locale: true, notes: true } },
       messages: {
         orderBy: { createdAt: "asc" },
         include: {
@@ -371,6 +371,7 @@ async function enrichMessageInBackground(
             phoneNumber: true,
             jobDescription: true,
             hireDate: true,
+            notes: true,
           },
         },
         group: {
@@ -431,6 +432,7 @@ async function enrichMessageInBackground(
         phoneNumber: conversation.worker.phoneNumber,
         jobDescription: conversation.worker.jobDescription,
         hireDate: conversation.worker.hireDate,
+        notes: conversation.worker.notes,
       },
       groupInfo: {
         name: conversation.group.name,
@@ -608,6 +610,7 @@ export async function regenerateMessageSuggestions(params: {
           phoneNumber: true,
           jobDescription: true,
           hireDate: true,
+          notes: true,
         },
       },
       messages: {
@@ -649,6 +652,7 @@ export async function regenerateMessageSuggestions(params: {
         phoneNumber: conversation.worker.phoneNumber,
         jobDescription: conversation.worker.jobDescription,
         hireDate: conversation.worker.hireDate,
+        notes: conversation.worker.notes,
       },
       groupInfo: {
         name: conversation.group.name,
@@ -724,6 +728,7 @@ export async function regenerateMessageSuggestions(params: {
         phoneNumber: conversation.worker.phoneNumber,
         jobDescription: conversation.worker.jobDescription,
         hireDate: conversation.worker.hireDate,
+        notes: conversation.worker.notes,
       },
       groupInfo: {
         name: conversation.group.name,

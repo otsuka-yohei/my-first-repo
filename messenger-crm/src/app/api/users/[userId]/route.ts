@@ -16,6 +16,7 @@ const patchSchema = z.object({
   phoneNumber: z.string().max(50).optional().nullable(),
   jobDescription: z.string().max(500).optional().nullable(),
   hireDate: z.string().optional().nullable(),
+  notes: z.string().max(2000).optional().nullable(),
 })
 
 type RouteParams = {

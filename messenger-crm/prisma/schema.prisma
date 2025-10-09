@@ -75,6 +75,7 @@ model User {
   phoneNumber      String?              // 電話番号
   jobDescription   String?              // 業務内容
   hireDate         DateTime?            // 入社年月日
+  notes            String?              // 備考（個別面談の内容など）
   memberships      GroupMembership[]
   conversations    Conversation[]       @relation("ConversationOwner")
   messages         Message[]

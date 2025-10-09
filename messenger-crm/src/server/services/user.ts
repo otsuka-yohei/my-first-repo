@@ -20,6 +20,7 @@ export interface UpdateUserProfileParams {
   phoneNumber?: string | null
   jobDescription?: string | null
   hireDate?: string | null
+  notes?: string | null
 }
 
 /**
@@ -110,6 +111,10 @@ export async function updateUserProfile(
     updateData.hireDate = updates.hireDate ? new Date(updates.hireDate) : null
   }
 
+  if (updates.notes !== undefined) {
+    updateData.notes = updates.notes?.trim() || null
+  }
+
   // データベース更新
   const updatedUser = await prisma.user.update({
     where: { id: targetUserId },
@@ -129,6 +134,7 @@ export async function updateUserProfile(
       phoneNumber: true,
       jobDescription: true,
       hireDate: true,
+      notes: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -170,6 +176,7 @@ export async function getUserProfile(user: SessionUser, targetUserId: string) {
       phoneNumber: true,
       jobDescription: true,
       hireDate: true,
+      notes: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -286,6 +293,14 @@ export interface CreateUserParams {
   role: UserRole
   groupIds: string[]
   locale?: string
+  countryOfOrigin?: string
+  dateOfBirth?: string
+  gender?: string
+  address?: string
+  phoneNumber?: string
+  jobDescription?: string
+  hireDate?: string
+  notes?: string
 }
 
 /**
@@ -364,14 +379,30 @@ export async function createUser(user: SessionUser, params: CreateUserParams) {
 
   // ユーザー作成とグループメンバーシップの作成をトランザクションで実行
   const newUser = await prisma.$transaction(async (tx) => {
+    // マネージャー以上の場合は任意情報を無視、ワーカーの場合のみ保存
+    const isWorker = params.role === UserRole.WORKER
+    const userData: Record<string, unknown> = {
+      email: trimmedEmail,
+      passwordHash,
+      name: trimmedName,
+      role: params.role,
+      locale: params.locale || "ja",
+    }
+
+    // ワーカーの場合のみ任意情報を追加
+    if (isWorker) {
+      if (params.countryOfOrigin) userData.countryOfOrigin = params.countryOfOrigin.trim()
+      if (params.dateOfBirth) userData.dateOfBirth = new Date(params.dateOfBirth)
+      if (params.gender) userData.gender = params.gender.trim()
+      if (params.address) userData.address = params.address.trim()
+      if (params.phoneNumber) userData.phoneNumber = params.phoneNumber.trim()
+      if (params.jobDescription) userData.jobDescription = params.jobDescription.trim()
+      if (params.hireDate) userData.hireDate = new Date(params.hireDate)
+      if (params.notes) userData.notes = params.notes.trim()
+    }
+
     const createdUser = await tx.user.create({
-      data: {
-        email: trimmedEmail,
-        passwordHash,
-        name: trimmedName,
-        role: params.role,
-        locale: params.locale || "ja",
-      },
+      data: userData,
       select: {
         id: true,
         email: true,
