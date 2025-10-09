@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import SettingsClient from "./settings-client"
 import { AppSidebar } from "@/app/_components/app-sidebar"
 import { auth } from "@/auth"
+import { prisma } from "@/server/db"
 
 export const metadata: Metadata = {
   title: "個人設定",
@@ -17,7 +18,29 @@ export default async function SettingsPage() {
     redirect("/signin")
   }
 
-  const user = session.user as typeof session.user & { locale?: string; avatarUrl?: string | null }
+  // データベースから完全なユーザー情報を取得
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      locale: true,
+      avatarUrl: true,
+      countryOfOrigin: true,
+      dateOfBirth: true,
+      gender: true,
+      address: true,
+      phoneNumber: true,
+      jobDescription: true,
+      hireDate: true,
+    },
+  })
+
+  if (!user) {
+    redirect("/signin")
+  }
 
   return (
     <div className="flex h-screen bg-[#f4f7fb]">
@@ -26,11 +49,18 @@ export default async function SettingsPage() {
         <SettingsClient
           currentUser={{
             id: user.id,
-            name: user.name ?? "",
-            email: user.email ?? "",
+            name: user.name,
+            email: user.email,
             role: user.role,
-            locale: user.locale ?? "ja",
-            avatarUrl: user.avatarUrl ?? null,
+            locale: user.locale,
+            avatarUrl: user.avatarUrl,
+            countryOfOrigin: user.countryOfOrigin,
+            dateOfBirth: user.dateOfBirth?.toISOString() ?? null,
+            gender: user.gender,
+            address: user.address,
+            phoneNumber: user.phoneNumber,
+            jobDescription: user.jobDescription,
+            hireDate: user.hireDate?.toISOString() ?? null,
           }}
         />
       </main>

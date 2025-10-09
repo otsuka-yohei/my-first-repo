@@ -11,6 +11,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { AppSidebar } from "./app-sidebar"
+import { MedicalFacilitiesList, type MedicalFacility } from "./medical-facility-card"
 import type { CasePriority, CaseStatus } from "@prisma/client"
 
 type UserRole = "WORKER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
@@ -29,7 +30,16 @@ type MessageItem = {
     translation?: string | null
     translationLang?: string | null
     suggestions?: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
-    followUpSuggestions?: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
+    extra?: {
+      healthAnalysis?: {
+        isHealthRelated: boolean
+        symptomType?: string
+        urgency?: string
+        needsMedicalFacility?: boolean
+        suggestedQuestions?: string[]
+      }
+      medicalFacilities?: MedicalFacility[]
+    }
   } | null
 }
 
@@ -323,17 +333,6 @@ function ManagerChatDashboard({
     for (const message of reversed) {
       if (message.llmArtifact?.suggestions?.length) {
         return message.llmArtifact.suggestions
-      }
-    }
-    return []
-  }, [messages])
-
-  const followUpItems = useMemo(() => {
-    if (!messages.length) return []
-    const reversed = [...messages].reverse()
-    for (const message of reversed) {
-      if (message.llmArtifact?.followUpSuggestions?.length) {
-        return message.llmArtifact.followUpSuggestions
       }
     }
     return []
@@ -641,7 +640,6 @@ function ManagerChatDashboard({
           conversation={selectedConversation}
           consultation={consultation}
           suggestions={suggestionItems}
-          followUpSuggestions={followUpItems}
           onSelectSuggestion={(content, index) => {
             setComposer(content)
             setSelectedSuggestion({ text: content, index })
@@ -1132,40 +1130,57 @@ function ChatView({
               messages.map((message) => {
                 const isWorker = message.sender.role === "WORKER"
                 const translation = message.llmArtifact?.translation?.trim()
+                const medicalFacilities = message.llmArtifact?.extra?.medicalFacilities
+                const healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
+
                 return (
-                  <div key={message.id} className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
-                    <div
-                      className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
-                        isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
-                      }`}
-                    >
-                      <div className="space-y-3">
-                        <p
-                          className={`whitespace-pre-wrap text-sm leading-relaxed ${
-                            isWorker ? "text-slate-800" : "text-white"
-                          }`}
-                        >
-                          {message.body}
-                        </p>
-                        {translation ? (
-                          <div
-                            className={`border-t pt-3 text-sm leading-relaxed ${
-                              isWorker
-                                ? "border-slate-300 text-slate-600"
-                                : "border-white/40 text-white/80"
+                  <div key={message.id}>
+                    <div className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
+                      <div
+                        className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                          isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
+                        }`}
+                      >
+                        <div className="space-y-3">
+                          <p
+                            className={`whitespace-pre-wrap text-sm leading-relaxed ${
+                              isWorker ? "text-slate-800" : "text-white"
                             }`}
                           >
-                            <p className="whitespace-pre-wrap">{translation}</p>
-                          </div>
-                        ) : null}
+                            {message.body}
+                          </p>
+                          {translation ? (
+                            <div
+                              className={`border-t pt-3 text-sm leading-relaxed ${
+                                isWorker
+                                  ? "border-slate-300 text-slate-600"
+                                  : "border-white/40 text-white/80"
+                              }`}
+                            >
+                              <p className="whitespace-pre-wrap">{translation}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                        <p className={`mt-3 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
+                          {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </p>
                       </div>
-                      <p className={`mt-3 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
-                        {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
                     </div>
+
+                    {/* 医療機関カードの表示 */}
+                    {medicalFacilities && medicalFacilities.length > 0 && (
+                      <div className="mt-3 flex justify-start">
+                        <div className="max-w-[75%]">
+                          <MedicalFacilitiesList
+                            facilities={medicalFacilities}
+                            title="近隣の医療機関"
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
               })
@@ -1229,7 +1244,6 @@ type ManagerInsightsPanelProps = {
   conversation: (ConversationDetail & { messages: MessageItem[] }) | null
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
   suggestions: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
-  followUpSuggestions: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
   onSelectSuggestion: (content: string, index: number) => void
   onFocusComposer: () => void
   onRegenerateSuggestions: () => void
@@ -1249,7 +1263,6 @@ function ManagerInsightsPanel({
   conversation,
   consultation,
   suggestions,
-  followUpSuggestions,
   onSelectSuggestion,
   onFocusComposer,
   onRegenerateSuggestions,
@@ -1359,61 +1372,6 @@ function ManagerInsightsPanel({
             </p>
           </div>
         </section>
-
-        {followUpSuggestions.length > 0 && (
-          <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-slate-800">フォローアップ提案</h2>
-              <Badge variant="secondary" className="text-[10px]">
-                {followUpSuggestions[0]?.tone === "check-in"
-                  ? "💡 定期チェック"
-                  : followUpSuggestions[0]?.tone === "gentle-follow-up"
-                  ? "🔄 フォロー"
-                  : "💬 継続"}
-              </Badge>
-            </div>
-            <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
-              {followUpSuggestions.map((suggestion, index) => {
-                const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
-                const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
-                return (
-                  <button
-                    key={`${suggestion.content}-${index}`}
-                    type="button"
-                    onClick={() => onSelectSuggestion(suggestion.content, index)}
-                    className="w-full text-left"
-                  >
-                    <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                      <CardContent className="space-y-3 p-4">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
-                            {toneLabel}
-                          </Badge>
-                        </div>
-                        <div className="space-y-3 text-sm leading-relaxed text-slate-700">
-                          <p className="whitespace-pre-wrap">{suggestion.content}</p>
-                          {suggestion.translation ? (
-                            <div className="border-t border-slate-200 pt-3 text-slate-600">
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                {suggestion.translationLang ?? "翻訳"}
-                              </p>
-                              <p className="whitespace-pre-wrap text-xs leading-relaxed">{suggestion.translation}</p>
-                            </div>
-                          ) : null}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </button>
-                )
-              })}
-            </div>
-            <div className="mt-4">
-              <p className="text-center text-xs text-muted-foreground">
-                💡 会話の流れに応じた次のメッセージ提案です
-              </p>
-            </div>
-          </section>
-        )}
 
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-800">相談者情報</h2>

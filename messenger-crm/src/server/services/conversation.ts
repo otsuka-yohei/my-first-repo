@@ -2,7 +2,8 @@ import { MessageType, UserRole, Prisma } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM, segmentConversation, generateFollowUpSuggestions } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation, generateFollowUpSuggestions, analyzeHealthConsultation } from "@/server/llm/service"
+import { searchMedicalFacilities, type MedicalFacility } from "@/server/services/medical"
 
 interface SessionUser {
   id: string
@@ -272,25 +273,17 @@ export async function appendMessage(params: {
     ? "ja"
     : (params.user as SessionUser & { locale?: string }).locale
 
-  if (params.user.role === UserRole.WORKER) {
-    // ワーカーからのメッセージ: マネージャー向けAI返信を生成
-    void enrichMessageInBackground(
-      message.id,
-      message.body,
-      message.language,
-      targetLanguage,
-      conversation.worker.locale ?? undefined,
-      managerLocale
-    )
-  } else {
-    // マネージャーからのメッセージ: フォローアップ提案を生成
-    void generateFollowUpInBackground(
-      message.id,
-      params.conversationId,
-      conversation.worker.locale ?? undefined,
-      managerLocale
-    )
-  }
+  // すべてのメッセージでAI返信を生成（会話履歴とユーザー情報を参照）
+  void enrichMessageInBackground(
+    message.id,
+    params.conversationId,
+    message.body,
+    message.language,
+    targetLanguage,
+    conversation.worker.locale ?? undefined,
+    managerLocale,
+    params.user.role
+  )
 
   void regenerateConversationSegmentsInBackground(params.conversationId)
 
@@ -299,68 +292,42 @@ export async function appendMessage(params: {
 
 async function enrichMessageInBackground(
   messageId: string,
+  conversationId: string,
   content: string,
   language: string,
   targetLanguage: string,
   workerLocale?: string,
   managerLocale?: string,
+  senderRole?: UserRole,
 ) {
   try {
     console.log(`[background] Starting LLM enrichment for message ${messageId}`)
     const startTime = Date.now()
 
-    const enrichment = await enrichMessageWithLLM({
-      content,
-      language,
-      targetLanguage,
-      workerLocale,
-      managerLocale,
-    })
-
-    await prisma.messageLLMArtifact.upsert({
-      where: { messageId },
-      update: {
-        translation: enrichment.translation?.translation,
-        translationLang: targetLanguage,
-        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
-        extra: {
-          provider: enrichment.translation?.provider,
-          model: enrichment.translation?.model,
-        },
-      },
-      create: {
-        messageId,
-        translation: enrichment.translation?.translation,
-        translationLang: targetLanguage,
-        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
-        extra: {
-          provider: enrichment.translation?.provider,
-          model: enrichment.translation?.model,
-        },
-      },
-    })
-
-    const duration = Date.now() - startTime
-    console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
-  } catch (error) {
-    console.error(`[background] Failed to enrich message ${messageId}:`, error)
-  }
-}
-
-async function generateFollowUpInBackground(
-  messageId: string,
-  conversationId: string,
-  workerLocale?: string,
-  managerLocale?: string,
-) {
-  try {
-    console.log(`[background] Starting follow-up generation for message ${messageId}`)
-    const startTime = Date.now()
-
-    // 会話履歴を取得
+    // 会話履歴とworker情報を取得
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       include: {
+        worker: {
+          select: {
+            name: true,
+            locale: true,
+            countryOfOrigin: true,
+            dateOfBirth: true,
+            gender: true,
+            address: true,
+            phoneNumber: true,
+            jobDescription: true,
+            hireDate: true,
+          },
+        },
+        group: {
+          select: {
+            name: true,
+            phoneNumber: true,
+            address: true,
+          },
+        },
         messages: {
           orderBy: { createdAt: "desc" },
           take: 10, // 直近10件
@@ -371,58 +338,128 @@ async function generateFollowUpInBackground(
       },
     })
 
-    if (!conversation || conversation.messages.length === 0) {
-      console.log(`[background] No messages found for conversation ${conversationId}`)
+    if (!conversation) {
+      console.log(`[background] Conversation ${conversationId} not found`)
       return
     }
 
     // メッセージを時系列順に並べ替え
     const sortedMessages = [...conversation.messages].reverse()
 
-    // 最後のワーカーメッセージを探す
+    // 最後のワーカーメッセージからの経過時間を計算
     const lastWorkerMessage = sortedMessages.findLast((msg) => msg.sender.role === UserRole.WORKER)
-
-    // ワーカーからの最後のメッセージからの経過時間を計算
     let daysSinceLastWorkerMessage = 0
     if (lastWorkerMessage) {
       const timeDiff = Date.now() - new Date(lastWorkerMessage.createdAt).getTime()
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
-    } else {
+    } else if (senderRole !== UserRole.WORKER) {
       // ワーカーからのメッセージがない場合は、会話開始からの経過時間
       const timeDiff = Date.now() - new Date(conversation.createdAt).getTime()
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
     }
 
-    // フォローアップ提案を生成
-    const followUpSuggestions = await generateFollowUpSuggestions({
+    const enrichment = await enrichMessageWithLLM({
+      content,
+      language,
+      targetLanguage,
+      workerLocale,
+      managerLocale,
       conversationHistory: sortedMessages.map((msg) => ({
         body: msg.body,
         senderRole: msg.sender.role,
         createdAt: msg.createdAt,
       })),
-      workerLocale: workerLocale ?? "vi",
-      managerLocale: managerLocale ?? "ja",
+      workerInfo: {
+        name: conversation.worker.name,
+        locale: conversation.worker.locale,
+        countryOfOrigin: conversation.worker.countryOfOrigin,
+        dateOfBirth: conversation.worker.dateOfBirth,
+        gender: conversation.worker.gender,
+        address: conversation.worker.address,
+        phoneNumber: conversation.worker.phoneNumber,
+        jobDescription: conversation.worker.jobDescription,
+        hireDate: conversation.worker.hireDate,
+      },
+      groupInfo: {
+        name: conversation.group.name,
+        phoneNumber: conversation.group.phoneNumber,
+        address: conversation.group.address,
+      },
       daysSinceLastWorkerMessage,
     })
 
-    // データベースに保存
+    // 健康相談の分析
+    let medicalFacilities: MedicalFacility[] | undefined
+    const healthAnalysis = await analyzeHealthConsultation({
+      conversationHistory: sortedMessages.map((msg) => ({
+        body: msg.body,
+        senderRole: msg.sender.role,
+        createdAt: msg.createdAt,
+      })),
+      workerInfo: {
+        address: conversation.worker.address,
+      },
+    })
+
+    console.log("[background] Health consultation analysis:", healthAnalysis)
+
+    // 健康相談で医療機関が必要な場合、自動検索
+    if (
+      healthAnalysis.isHealthRelated &&
+      healthAnalysis.needsMedicalFacility &&
+      healthAnalysis.hasAddress &&
+      conversation.worker.address
+    ) {
+      try {
+        console.log("[background] Searching medical facilities for worker")
+        medicalFacilities = await searchMedicalFacilities({
+          address: conversation.worker.address,
+          symptomType: healthAnalysis.symptomType,
+          urgency: healthAnalysis.urgency,
+        })
+        console.log(`[background] Found ${medicalFacilities.length} medical facilities`)
+      } catch (error) {
+        console.error("[background] Failed to search medical facilities:", error)
+      }
+    }
+
+    const extraData: Record<string, unknown> = {
+      provider: enrichment.translation?.provider,
+      model: enrichment.translation?.model,
+    }
+
+    if (healthAnalysis.isHealthRelated) {
+      extraData.healthAnalysis = healthAnalysis
+    }
+
+    if (medicalFacilities && medicalFacilities.length > 0) {
+      extraData.medicalFacilities = medicalFacilities
+    }
+
     await prisma.messageLLMArtifact.upsert({
       where: { messageId },
       update: {
-        followUpSuggestions: followUpSuggestions as unknown as Prisma.InputJsonValue,
+        translation: enrichment.translation?.translation,
+        translationLang: targetLanguage,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
+        extra: extraData as Prisma.InputJsonValue,
       },
       create: {
         messageId,
-        followUpSuggestions: followUpSuggestions as unknown as Prisma.InputJsonValue,
+        translation: enrichment.translation?.translation,
+        translationLang: targetLanguage,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
+        extra: extraData as Prisma.InputJsonValue,
       },
     })
 
     const duration = Date.now() - startTime
-    console.log(`[background] Follow-up generation completed for message ${messageId} in ${duration}ms (${followUpSuggestions.length} suggestions)`)
+    console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
   } catch (error) {
-    console.error(`[background] Failed to generate follow-up for message ${messageId}:`, error)
+    console.error(`[background] Failed to enrich message ${messageId}:`, error)
   }
 }
+
 
 async function regenerateConversationSegmentsInBackground(conversationId: string) {
   try {

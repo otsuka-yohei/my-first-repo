@@ -67,6 +67,16 @@ const segmentModel = env.GOOGLE_SEGMENT_API_KEY
   ? new GoogleGenerativeAI(env.GOOGLE_SEGMENT_API_KEY).getGenerativeModel({ model: SEGMENT_MODEL })
   : null
 
+const HEALTH_CONSULTATION_MODEL = "gemini-2.5-flash"
+const healthConsultationModel = env.GOOGLE_SUGGEST_API_KEY
+  ? new GoogleGenerativeAI(env.GOOGLE_SUGGEST_API_KEY).getGenerativeModel({
+      model: HEALTH_CONSULTATION_MODEL,
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
+    })
+  : null
+
 export interface TranslationRequest {
   content: string
   sourceLanguage: string
@@ -88,14 +98,6 @@ export interface SuggestedReply {
   translationLang?: string
 }
 
-export interface FollowUpSuggestion {
-  content: string
-  tone: "check-in" | "gentle-follow-up" | "continuation" | "encouragement"
-  language: string
-  translation?: string
-  translationLang?: string
-  timing?: "immediate" | "after-3-days" | "after-7-days"
-}
 
 export interface SuggestionRequest {
   transcript: string
@@ -190,20 +192,173 @@ export async function translateMessage(
   }
 }
 
-export async function generateSuggestedReplies(
-  request: SuggestionRequest,
-): Promise<SuggestedReply[]> {
-  const prompt =
-    `You are an empathetic support ${request.persona}. Based on the following customer transcript, ` +
-    `suggest exactly 3 concise replies in ${request.language}.\n\n` +
-    `IMPORTANT: Return ONLY the replies in this exact format (one per line):\n` +
-    `question: [your question reply here]\n` +
-    `empathy: [your empathetic reply here]\n` +
-    `solution: [your solution-oriented reply here]\n\n` +
-    `Do NOT include any other text, numbering, or markdown formatting.\n\n` +
-    `Transcript:\n${request.transcript}`
+export interface EnhancedSuggestionRequest {
+  conversationHistory: Array<{
+    body: string
+    senderRole: string
+    createdAt: Date | string
+  }>
+  workerInfo: {
+    name?: string | null
+    locale?: string | null
+    countryOfOrigin?: string | null
+    dateOfBirth?: Date | null
+    gender?: string | null
+    address?: string | null
+    phoneNumber?: string | null
+    jobDescription?: string | null
+    hireDate?: Date | null
+  }
+  groupInfo?: {
+    name?: string | null
+    phoneNumber?: string | null
+    address?: string | null
+  }
+  language: string
+  persona: "agent" | "manager"
+  targetTranslationLanguage?: string
+  daysSinceLastWorkerMessage?: number
+}
 
-  const output = await safeGenerateText(suggestModel, prompt, `suggestions-${request.language}`)
+export async function generateSuggestedReplies(
+  request: SuggestionRequest | EnhancedSuggestionRequest,
+): Promise<SuggestedReply[]> {
+  // 後方互換性のため、古い形式もサポート
+  const isEnhanced = 'conversationHistory' in request
+
+  let prompt: string
+  let operationName: string
+
+  if (isEnhanced) {
+    // 新しい形式: 会話履歴とユーザー情報を参照
+    const workerName = request.workerInfo.name || "相談者"
+    const workerLocale = request.workerInfo.locale ? getLocaleLabel(request.workerInfo.locale) : "不明"
+
+    // ワーカーの詳細情報を構築
+    const workerDetails: string[] = []
+    if (request.workerInfo.countryOfOrigin) {
+      workerDetails.push(`出身国: ${request.workerInfo.countryOfOrigin}`)
+    }
+    if (request.workerInfo.dateOfBirth) {
+      const age = calculateAge(request.workerInfo.dateOfBirth)
+      workerDetails.push(`年齢: ${age}歳`)
+    }
+    if (request.workerInfo.gender) {
+      workerDetails.push(`性別: ${request.workerInfo.gender}`)
+    }
+    if (request.workerInfo.jobDescription) {
+      workerDetails.push(`業務内容: ${request.workerInfo.jobDescription}`)
+    }
+    if (request.workerInfo.hireDate) {
+      const yearsOfService = calculateYearsOfService(request.workerInfo.hireDate)
+      workerDetails.push(`勤続年数: ${yearsOfService}`)
+    }
+    if (request.workerInfo.address) {
+      workerDetails.push(`住所: ${request.workerInfo.address}`)
+    }
+
+    // グループ情報を構築
+    const groupDetails: string[] = []
+    if (request.groupInfo?.name) {
+      groupDetails.push(`所属グループ: ${request.groupInfo.name}`)
+    }
+    if (request.groupInfo?.address) {
+      groupDetails.push(`グループ住所: ${request.groupInfo.address}`)
+    }
+    if (request.groupInfo?.phoneNumber) {
+      groupDetails.push(`グループ電話番号: ${request.groupInfo.phoneNumber}`)
+    }
+
+    // 会話履歴を要約（直近10件）
+    const recentMessages = request.conversationHistory.slice(-10)
+    const transcript = recentMessages
+      .map((msg) => {
+        const time = new Date(msg.createdAt).toLocaleString("ja-JP")
+        const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
+        return `[${time}] ${role}: ${msg.body}`
+      })
+      .join("\n")
+
+    // マネージャー連投かどうかを判定
+    const lastMessages = request.conversationHistory.slice(-3)
+    const consecutiveManagerMessages = lastMessages.filter(msg => msg.senderRole !== "WORKER").length
+    const isManagerConsecutive = consecutiveManagerMessages >= 2
+
+    // ワーカーからの最後のメッセージからの経過日数
+    const daysSince = request.daysSinceLastWorkerMessage ?? 0
+
+    let contextDescription = ""
+    let tones = ["question", "empathy", "solution"]
+
+    // 健康相談の検出
+    const recentWorkerMessages = recentMessages.filter(msg => msg.senderRole === "WORKER").slice(-3)
+    const lastWorkerMessage = recentWorkerMessages[recentWorkerMessages.length - 1]
+    const isHealthRelated = lastWorkerMessage?.body && (
+      /体調|痛|怪我|ケガ|病気|熱|風邪|頭痛|腹痛|咳|吐き気|めまい|病院|医者|診察/.test(lastWorkerMessage.body)
+    )
+
+    if (isHealthRelated) {
+      // 健康相談の場合、症状確認や病院探しをサポート
+      contextDescription = `${workerName}さん（${workerLocale}話者）から健康相談がありました。症状の詳細、いつ病院に行きたいか、怪我の場合は労災の可能性（仕事中か等）を確認し、必要に応じて病院探しをサポートしてください。住所: ${workerDetails.includes("住所:") ? workerDetails.find(d => d.startsWith("住所:")) : "未登録"}`
+      tones = ["empathy", "question", "solution"]
+    } else if (daysSince > 7) {
+      // 7日以上経過: チェックイン型のメッセージ
+      contextDescription = `前回の会話から1週間以上経過しています。${workerName}さん（${workerLocale}話者）の現在の状況や悩みを確認する、温かみのあるメッセージを提案してください。`
+      tones = ["check-in", "check-in", "check-in"]
+    } else if (daysSince > 3) {
+      // 3日以上経過: フォローアップ型
+      contextDescription = `前回の会話から3日以上経過しています。${workerName}さん（${workerLocale}話者）について、前回の話題について優しくフォローアップするメッセージを提案してください。`
+      tones = ["gentle-follow-up", "gentle-follow-up", "continuation"]
+    } else if (isManagerConsecutive) {
+      // マネージャー連投: 継続・励まし型
+      contextDescription = `マネージャーが連続してメッセージを送信しています。${workerName}さん（${workerLocale}話者）が安心して返信できるような、継続や励ましのメッセージを提案してください。`
+      tones = ["continuation", "encouragement", "empathy"]
+    } else {
+      // 通常の返信
+      contextDescription = `${workerName}さん（${workerLocale}話者）からのメッセージに対して、適切な返信を提案してください。`
+      tones = ["question", "empathy", "solution"]
+    }
+
+    // ワーカー情報セクション
+    const workerInfoSection = workerDetails.length > 0
+      ? `\n\n### ワーカー情報:\n${workerDetails.join("\n")}`
+      : ""
+
+    // グループ情報セクション
+    const groupInfoSection = groupDetails.length > 0
+      ? `\n\n### グループ情報:\n${groupDetails.join("\n")}`
+      : ""
+
+    prompt =
+      `あなたは外国人労働者をサポートする経験豊富なマネージャーです。以下の情報に基づいて、` +
+      `${workerName}さん（${workerLocale}話者）に送る次のメッセージを${request.language}で3つ提案してください。\n\n` +
+      `${contextDescription}${workerInfoSection}${groupInfoSection}\n\n` +
+      `IMPORTANT: 以下の形式で正確に3つのメッセージを返してください（1行に1つ）:\n` +
+      `${tones[0]}: [メッセージ内容1]\n` +
+      `${tones[1]}: [メッセージ内容2]\n` +
+      `${tones[2]}: [メッセージ内容3]\n\n` +
+      `番号付けやマークダウン形式は使用しないでください。\n` +
+      `上記のワーカー情報とグループ情報を考慮して、個別化された適切なメッセージを提案してください。\n\n` +
+      `会話履歴:\n${transcript}\n\n` +
+      `前回のワーカーからのメッセージからの経過日数: ${Math.round(daysSince)} 日`
+
+    operationName = `enhanced-suggestions-${request.language}`
+  } else {
+    // 古い形式: 単一メッセージのみ参照（後方互換性）
+    prompt =
+      `You are an empathetic support ${request.persona}. Based on the following customer transcript, ` +
+      `suggest exactly 3 concise replies in ${request.language}.\n\n` +
+      `IMPORTANT: Return ONLY the replies in this exact format (one per line):\n` +
+      `question: [your question reply here]\n` +
+      `empathy: [your empathetic reply here]\n` +
+      `solution: [your solution-oriented reply here]\n\n` +
+      `Do NOT include any other text, numbering, or markdown formatting.\n\n` +
+      `Transcript:\n${request.transcript}`
+
+    operationName = `suggestions-${request.language}`
+  }
+
+  const output = await safeGenerateText(suggestModel, prompt, operationName)
 
   if (!output) {
     if (!suggestModel) {
@@ -325,12 +480,93 @@ function normalizeLocale(locale: string | undefined): string | undefined {
   return locale.split("-")[0].toLowerCase()
 }
 
+function getLocaleLabel(locale: string): string {
+  const normalized = locale.toLowerCase()
+  switch (normalized) {
+    case "ja":
+    case "ja-jp":
+      return "日本語"
+    case "vi":
+    case "vi-vn":
+      return "ベトナム語"
+    case "en":
+    case "en-us":
+      return "英語"
+    case "id":
+    case "id-id":
+      return "インドネシア語"
+    case "tl":
+    case "fil":
+      return "タガログ語"
+    default:
+      return locale
+  }
+}
+
+function calculateAge(dateOfBirth: Date): number {
+  const today = new Date()
+  const birthDate = new Date(dateOfBirth)
+  let age = today.getFullYear() - birthDate.getFullYear()
+  const monthDiff = today.getMonth() - birthDate.getMonth()
+
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--
+  }
+
+  return age
+}
+
+function calculateYearsOfService(hireDate: Date): string {
+  const today = new Date()
+  const hire = new Date(hireDate)
+  const years = today.getFullYear() - hire.getFullYear()
+  const months = today.getMonth() - hire.getMonth()
+
+  let totalMonths = years * 12 + months
+  if (today.getDate() < hire.getDate()) {
+    totalMonths--
+  }
+
+  const serviceYears = Math.floor(totalMonths / 12)
+  const serviceMonths = totalMonths % 12
+
+  if (serviceYears === 0) {
+    return `${serviceMonths}ヶ月`
+  } else if (serviceMonths === 0) {
+    return `${serviceYears}年`
+  } else {
+    return `${serviceYears}年${serviceMonths}ヶ月`
+  }
+}
+
 export async function enrichMessageWithLLM(params: {
   content: string
   language: string
   targetLanguage: string
   workerLocale?: string
   managerLocale?: string
+  conversationHistory?: Array<{
+    body: string
+    senderRole: string
+    createdAt: Date | string
+  }>
+  workerInfo?: {
+    name?: string | null
+    locale?: string | null
+    countryOfOrigin?: string | null
+    dateOfBirth?: Date | null
+    gender?: string | null
+    address?: string | null
+    phoneNumber?: string | null
+    jobDescription?: string | null
+    hireDate?: Date | null
+  }
+  groupInfo?: {
+    name?: string | null
+    phoneNumber?: string | null
+    address?: string | null
+  }
+  daysSinceLastWorkerMessage?: number
 }): Promise<EnrichmentResult> {
   // ログイン中のマネージャーの表示言語でAI返信を生成
   // マネージャーの言語とワーカーの言語が異なる場合、ワーカーの言語での翻訳を追加
@@ -351,12 +587,23 @@ export async function enrichMessageWithLLM(params: {
       sourceLanguage: params.language,
       targetLanguage: params.targetLanguage,
     }),
-    generateSuggestedReplies({
-      transcript: params.content,
-      language: suggestionLanguage,
-      persona: "agent",
-      targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
-    }),
+    // 会話履歴がある場合は新しいEnhanced形式を使用、ない場合は従来の形式
+    params.conversationHistory && params.workerInfo
+      ? generateSuggestedReplies({
+          conversationHistory: params.conversationHistory,
+          workerInfo: params.workerInfo,
+          groupInfo: params.groupInfo,
+          language: suggestionLanguage,
+          persona: "manager",
+          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+          daysSinceLastWorkerMessage: params.daysSinceLastWorkerMessage,
+        } as EnhancedSuggestionRequest)
+      : generateSuggestedReplies({
+          transcript: params.content,
+          language: suggestionLanguage,
+          persona: "agent",
+          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+        }),
   ])
 
   return {
@@ -471,6 +718,81 @@ export interface SegmentationRequest {
   }>
 }
 
+export interface HealthConsultationAnalysis {
+  isHealthRelated: boolean
+  symptomType?: string // 例: "内科", "外科", "歯科"
+  urgency?: "immediate" | "today" | "this_week" | "flexible"
+  needsMedicalFacility?: boolean
+  hasAddress?: boolean
+  injuryContext?: string // 労災の可能性を判断するための情報
+  suggestedQuestions?: string[] // ワーカーに聞くべき質問
+}
+
+/**
+ * 会話を分析して健康相談かどうかを判定し、必要な情報を抽出
+ */
+export async function analyzeHealthConsultation(params: {
+  conversationHistory: Array<{
+    body: string
+    senderRole: string
+    createdAt: Date | string
+  }>
+  workerInfo: {
+    address?: string | null
+  }
+}): Promise<HealthConsultationAnalysis> {
+  if (!healthConsultationModel) {
+    console.log("[llm] Health consultation model not configured")
+    return { isHealthRelated: false }
+  }
+
+  const transcript = params.conversationHistory
+    .map((msg) => {
+      const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
+      return `${role}: ${msg.body}`
+    })
+    .join("\n")
+
+  const prompt =
+    `以下の会話を分析して、健康相談（体調不良、怪我、病気など）に関連しているかを判定してください。\n\n` +
+    `会話履歴:\n${transcript}\n\n` +
+    `ワーカーの住所: ${params.workerInfo.address || "未登録"}\n\n` +
+    `以下のJSON形式で回答してください:\n` +
+    `{\n` +
+    `  "isHealthRelated": boolean,\n` +
+    `  "symptomType": "内科" | "外科" | "整形外科" | "歯科" | "皮膚科" | "耳鼻咽喉科" | "眼科" | null,\n` +
+    `  "urgency": "immediate" | "today" | "this_week" | "flexible" | null,\n` +
+    `  "needsMedicalFacility": boolean,\n` +
+    `  "hasAddress": boolean,\n` +
+    `  "injuryContext": string | null,\n` +
+    `  "suggestedQuestions": string[]\n` +
+    `}\n\n` +
+    `判定基準:\n` +
+    `- isHealthRelated: 体調不良、怪我、病気の相談があればtrue\n` +
+    `- symptomType: 症状から適切な診療科を推測\n` +
+    `- urgency: "今すぐ"/"すぐに"なら"immediate", "今日"なら"today", "今週中"なら"this_week", その他は"flexible"\n` +
+    `- needsMedicalFacility: ワーカーが病院を探している、または病院が必要な状況ならtrue\n` +
+    `- hasAddress: ワーカーの住所が登録されているかどうか\n` +
+    `- injuryContext: 怪我の場合、仕事中か否か等の経緯(労災判定に必要)\n` +
+    `- suggestedQuestions: まだ聞いていない重要な情報(症状の詳細、いつ病院に行きたいか、怪我の経緯など)があれば、質問を提案`
+
+  const output = await safeGenerateText(healthConsultationModel, prompt, "health-consultation-analysis")
+
+  if (!output) {
+    console.log("[llm] Failed to analyze health consultation")
+    return { isHealthRelated: false }
+  }
+
+  try {
+    const analysis = JSON.parse(output) as HealthConsultationAnalysis
+    console.log("[llm] Health consultation analysis:", analysis)
+    return analysis
+  } catch (error) {
+    console.error("[llm] Failed to parse health consultation analysis:", error)
+    return { isHealthRelated: false }
+  }
+}
+
 export async function segmentConversation(
   request: SegmentationRequest,
 ): Promise<ConversationSegment[]> {
@@ -568,196 +890,3 @@ export async function segmentConversation(
   }
 }
 
-export interface FollowUpRequest {
-  conversationHistory: Array<{
-    body: string
-    senderRole: string
-    createdAt: Date | string
-  }>
-  workerLocale: string
-  managerLocale: string
-  daysSinceLastWorkerMessage: number
-}
-
-function determineFollowUpTone(daysSinceLastMessage: number): string {
-  if (daysSinceLastMessage > 7) {
-    return "check-in"
-  } else if (daysSinceLastMessage > 3) {
-    return "gentle-follow-up"
-  } else {
-    return "continuation"
-  }
-}
-
-export async function generateFollowUpSuggestions(
-  request: FollowUpRequest,
-): Promise<FollowUpSuggestion[]> {
-  const tone = determineFollowUpTone(request.daysSinceLastWorkerMessage)
-  const normalizedManagerLocale = normalizeLocale(request.managerLocale)
-  const normalizedWorkerLocale = normalizeLocale(request.workerLocale)
-
-  // 会話履歴を要約
-  const recentMessages = request.conversationHistory.slice(-5) // 直近5件
-  const transcript = recentMessages
-    .map((msg) => {
-      const time = new Date(msg.createdAt).toLocaleString("ja-JP")
-      const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
-      return `[${time}] ${role}: ${msg.body}`
-    })
-    .join("\n")
-
-  let contextDescription = ""
-  if (tone === "check-in") {
-    contextDescription = "前回の会話から1週間以上経過しています。ワーカーの現在の状況や悩みを確認する、温かみのあるメッセージを提案してください。"
-  } else if (tone === "gentle-follow-up") {
-    contextDescription = "前回の会話から3日以上経過しています。前回の話題について優しくフォローアップするメッセージを提案してください。"
-  } else {
-    contextDescription = "会話の流れを継続し、ワーカーが安心して相談できるような、次の質問や確認のメッセージを提案してください。"
-  }
-
-  const prompt =
-    `あなたは外国人労働者をサポートする経験豊富なマネージャーです。以下の会話履歴に基づいて、` +
-    `ワーカーに送る次のメッセージを${normalizedManagerLocale ?? "ja"}で3つ提案してください。\n\n` +
-    `${contextDescription}\n\n` +
-    `IMPORTANT: 以下の形式で正確に3つのメッセージを返してください（1行に1つ）:\n` +
-    `${tone}: [メッセージ内容1]\n` +
-    `${tone}: [メッセージ内容2]\n` +
-    `${tone}: [メッセージ内容3]\n\n` +
-    `番号付けやマークダウン形式は使用しないでください。\n\n` +
-    `会話履歴:\n${transcript}\n\n` +
-    `前回のワーカーからのメッセージからの経過日数: ${Math.round(request.daysSinceLastWorkerMessage)} 日`
-
-  const output = await safeGenerateText(suggestModel, prompt, `follow-up-${tone}`)
-
-  if (!output) {
-    console.log("[llm] follow-up: No output from LLM, returning default suggestions")
-    return getDefaultFollowUpSuggestions(tone, normalizedManagerLocale ?? "ja")
-  }
-
-  console.log("[llm] Raw follow-up output:", output)
-
-  const suggestions = output
-    .split("\n")
-    .map((line) => line.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean)
-    .map((line) => {
-      const colonIndex = line.indexOf(":")
-      if (colonIndex === -1) {
-        return {
-          content: line,
-          tone: tone as FollowUpSuggestion["tone"],
-          language: normalizedManagerLocale ?? "ja",
-        }
-      }
-
-      const content = line.substring(colonIndex + 1).trim()
-      return {
-        content: content || line,
-        tone: tone as FollowUpSuggestion["tone"],
-        language: normalizedManagerLocale ?? "ja",
-      }
-    })
-    .filter((s) => s.content.length > 0)
-
-  console.log("[llm] Parsed follow-up suggestions:", JSON.stringify(suggestions, null, 2))
-
-  if (suggestions.length === 0) {
-    console.error("[llm] Failed to parse any follow-up suggestions from output")
-    return getDefaultFollowUpSuggestions(tone, normalizedManagerLocale ?? "ja")
-  }
-
-  // 翻訳が必要な場合
-  if (normalizedWorkerLocale && normalizedManagerLocale && normalizedWorkerLocale !== normalizedManagerLocale) {
-    console.log(`[llm] Translating follow-up suggestions from ${normalizedManagerLocale} to ${normalizedWorkerLocale}`)
-
-    try {
-      const translatedSuggestions = await Promise.all(
-        suggestions.map(async (suggestion, index) => {
-          try {
-            const translationResult = await translateMessage({
-              content: suggestion.content,
-              sourceLanguage: normalizedManagerLocale ?? "ja",
-              targetLanguage: normalizedWorkerLocale,
-            })
-
-            console.log(`[llm] Follow-up suggestion ${index + 1}/${suggestions.length} translated successfully`)
-
-            return {
-              ...suggestion,
-              translation: translationResult.translation,
-              translationLang: normalizedWorkerLocale,
-            }
-          } catch (error) {
-            console.error(`[llm] Failed to translate follow-up suggestion ${index + 1}:`, error instanceof Error ? error.message : String(error))
-            return suggestion
-          }
-        })
-      )
-
-      return translatedSuggestions
-    } catch (error) {
-      console.error("[llm] Critical error during follow-up translation:", error instanceof Error ? error.message : String(error))
-      return suggestions
-    }
-  }
-
-  return suggestions
-}
-
-function getDefaultFollowUpSuggestions(tone: string, language: string): FollowUpSuggestion[] {
-  const defaults: Record<string, FollowUpSuggestion[]> = {
-    "check-in": [
-      {
-        content: "お元気ですか？最近何か困っていることはありませんか？",
-        tone: "check-in",
-        language,
-      },
-      {
-        content: "調子はどうですか？何か心配事があれば遠慮なく相談してくださいね。",
-        tone: "check-in",
-        language,
-      },
-      {
-        content: "最近の様子を教えてください。何か変わったことはありましたか？",
-        tone: "check-in",
-        language,
-      },
-    ],
-    "gentle-follow-up": [
-      {
-        content: "前回の件、その後いかがですか？",
-        tone: "gentle-follow-up",
-        language,
-      },
-      {
-        content: "お話しした内容について、何か進展はありましたか？",
-        tone: "gentle-follow-up",
-        language,
-      },
-      {
-        content: "前回相談いただいた件、解決できましたか？",
-        tone: "gentle-follow-up",
-        language,
-      },
-    ],
-    "continuation": [
-      {
-        content: "他に何か気になることはありますか？",
-        tone: "continuation",
-        language,
-      },
-      {
-        content: "何か他に相談したいことがあれば、いつでもどうぞ。",
-        tone: "continuation",
-        language,
-      },
-      {
-        content: "わからないことがあれば、気軽に聞いてくださいね。",
-        tone: "continuation",
-        language,
-      },
-    ],
-  }
-
-  return defaults[tone] ?? defaults["continuation"]
-}

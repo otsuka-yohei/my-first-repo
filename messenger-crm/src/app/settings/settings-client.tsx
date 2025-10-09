@@ -42,6 +42,13 @@ interface CurrentUser {
   role: UserRole
   locale: string
   avatarUrl?: string | null
+  countryOfOrigin?: string | null
+  dateOfBirth?: string | null
+  gender?: string | null
+  address?: string | null
+  phoneNumber?: string | null
+  jobDescription?: string | null
+  hireDate?: string | null
 }
 
 interface SettingsClientProps {
@@ -59,6 +66,19 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
   const [isProfileSaving, setIsProfileSaving] = useState(false)
   const [isPreferenceSaving, setIsPreferenceSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // 詳細情報
+  const [countryOfOrigin, setCountryOfOrigin] = useState(currentUser.countryOfOrigin || "")
+  const [dateOfBirth, setDateOfBirth] = useState(
+    currentUser.dateOfBirth ? new Date(currentUser.dateOfBirth).toISOString().split("T")[0] : ""
+  )
+  const [gender, setGender] = useState(currentUser.gender || "")
+  const [address, setAddress] = useState(currentUser.address || "")
+  const [phoneNumber, setPhoneNumber] = useState(currentUser.phoneNumber || "")
+  const [jobDescription, setJobDescription] = useState(currentUser.jobDescription || "")
+  const [hireDate, setHireDate] = useState(
+    currentUser.hireDate ? new Date(currentUser.hireDate).toISOString().split("T")[0] : ""
+  )
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
@@ -142,11 +162,39 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
     setProfileMessage(null)
 
     try {
-      // プロフィール更新（名前のみ - アバター画像は現時点ではプレースホルダーURL）
-      const updateData: { name?: string; avatarUrl?: string } = {}
+      // プロフィール更新
+      const updateData: Record<string, unknown> = {}
 
       if (displayName.trim() !== currentUser.name) {
         updateData.name = displayName.trim()
+      }
+
+      if (countryOfOrigin.trim() !== (currentUser.countryOfOrigin || "")) {
+        updateData.countryOfOrigin = countryOfOrigin.trim() || null
+      }
+
+      if (dateOfBirth !== (currentUser.dateOfBirth ? new Date(currentUser.dateOfBirth).toISOString().split("T")[0] : "")) {
+        updateData.dateOfBirth = dateOfBirth || null
+      }
+
+      if (gender.trim() !== (currentUser.gender || "")) {
+        updateData.gender = gender.trim() || null
+      }
+
+      if (address.trim() !== (currentUser.address || "")) {
+        updateData.address = address.trim() || null
+      }
+
+      if (phoneNumber.trim() !== (currentUser.phoneNumber || "")) {
+        updateData.phoneNumber = phoneNumber.trim() || null
+      }
+
+      if (jobDescription.trim() !== (currentUser.jobDescription || "")) {
+        updateData.jobDescription = jobDescription.trim() || null
+      }
+
+      if (hireDate !== (currentUser.hireDate ? new Date(currentUser.hireDate).toISOString().split("T")[0] : "")) {
+        updateData.hireDate = hireDate || null
       }
 
       // アバター画像がアップロードされた場合
@@ -155,7 +203,7 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
       if (avatarFile) {
         // 本番環境では、ここでファイルをアップロードし、そのURLを取得します
         // updateData.avatarUrl = await uploadAvatar(avatarFile)
-        setProfileMessage("アバター画像のアップロードは現在準備中です。名前のみ保存されました。")
+        setProfileMessage("アバター画像のアップロードは現在準備中です。その他の情報は保存されました。")
       }
 
       if (Object.keys(updateData).length === 0) {
@@ -359,6 +407,80 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
                   value={displayName}
                   onChange={(event) => setDisplayName(event.target.value)}
                   placeholder="山田 太郎"
+                />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="country-of-origin">出身国</Label>
+                  <Input
+                    id="country-of-origin"
+                    value={countryOfOrigin}
+                    onChange={(event) => setCountryOfOrigin(event.target.value)}
+                    placeholder="ベトナム"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="date-of-birth">生年月日</Label>
+                  <Input
+                    id="date-of-birth"
+                    type="date"
+                    value={dateOfBirth}
+                    onChange={(event) => setDateOfBirth(event.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="gender">性別</Label>
+                  <Input
+                    id="gender"
+                    value={gender}
+                    onChange={(event) => setGender(event.target.value)}
+                    placeholder="男性"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="phone-number">電話番号</Label>
+                  <Input
+                    id="phone-number"
+                    value={phoneNumber}
+                    onChange={(event) => setPhoneNumber(event.target.value)}
+                    placeholder="090-1234-5678"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="address">住所</Label>
+                <Input
+                  id="address"
+                  value={address}
+                  onChange={(event) => setAddress(event.target.value)}
+                  placeholder="東京都渋谷区..."
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="job-description">業務内容</Label>
+                <Input
+                  id="job-description"
+                  value={jobDescription}
+                  onChange={(event) => setJobDescription(event.target.value)}
+                  placeholder="製造ライン作業"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="hire-date">入社年月日</Label>
+                <Input
+                  id="hire-date"
+                  type="date"
+                  value={hireDate}
+                  onChange={(event) => setHireDate(event.target.value)}
                 />
               </div>
 

@@ -13,6 +13,13 @@ export interface UpdateUserProfileParams {
   name?: string
   locale?: string
   avatarUrl?: string
+  countryOfOrigin?: string | null
+  dateOfBirth?: string | null
+  gender?: string | null
+  address?: string | null
+  phoneNumber?: string | null
+  jobDescription?: string | null
+  hireDate?: string | null
 }
 
 /**
@@ -75,6 +82,34 @@ export async function updateUserProfile(
     updateData.avatarUrl = updates.avatarUrl || null
   }
 
+  if (updates.countryOfOrigin !== undefined) {
+    updateData.countryOfOrigin = updates.countryOfOrigin?.trim() || null
+  }
+
+  if (updates.dateOfBirth !== undefined) {
+    updateData.dateOfBirth = updates.dateOfBirth ? new Date(updates.dateOfBirth) : null
+  }
+
+  if (updates.gender !== undefined) {
+    updateData.gender = updates.gender?.trim() || null
+  }
+
+  if (updates.address !== undefined) {
+    updateData.address = updates.address?.trim() || null
+  }
+
+  if (updates.phoneNumber !== undefined) {
+    updateData.phoneNumber = updates.phoneNumber?.trim() || null
+  }
+
+  if (updates.jobDescription !== undefined) {
+    updateData.jobDescription = updates.jobDescription?.trim() || null
+  }
+
+  if (updates.hireDate !== undefined) {
+    updateData.hireDate = updates.hireDate ? new Date(updates.hireDate) : null
+  }
+
   // データベース更新
   const updatedUser = await prisma.user.update({
     where: { id: targetUserId },
@@ -87,6 +122,13 @@ export async function updateUserProfile(
       locale: true,
       avatarUrl: true,
       timeZone: true,
+      countryOfOrigin: true,
+      dateOfBirth: true,
+      gender: true,
+      address: true,
+      phoneNumber: true,
+      jobDescription: true,
+      hireDate: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -121,6 +163,13 @@ export async function getUserProfile(user: SessionUser, targetUserId: string) {
       locale: true,
       avatarUrl: true,
       timeZone: true,
+      countryOfOrigin: true,
+      dateOfBirth: true,
+      gender: true,
+      address: true,
+      phoneNumber: true,
+      jobDescription: true,
+      hireDate: true,
       createdAt: true,
       updatedAt: true,
     },

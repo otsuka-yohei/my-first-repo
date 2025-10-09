@@ -66,6 +66,14 @@ model User {
   avatarUrl        String?
   timeZone         String?              @default("Asia/Tokyo")
   isActive         Boolean              @default(true)
+  // 追加情報
+  countryOfOrigin  String?              // 出身国
+  dateOfBirth      DateTime?            // 生年月日
+  gender           String?              // 性別
+  address          String?              // 住所
+  phoneNumber      String?              // 電話番号
+  jobDescription   String?              // 業務内容
+  hireDate         DateTime?            // 入社年月日
   memberships      GroupMembership[]
   conversations    Conversation[]       @relation("ConversationOwner")
   messages         Message[]
@@ -93,6 +101,9 @@ model Group {
   organizationId String
   name           String
   description    String?
+  // 追加情報
+  phoneNumber    String?           // グループ電話番号
+  address        String?           // グループ住所
   memberships    GroupMembership[]
   conversations  Conversation[]
   isDeleted      Boolean           @default(false)

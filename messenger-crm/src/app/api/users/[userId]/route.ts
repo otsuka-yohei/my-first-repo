@@ -9,6 +9,13 @@ const patchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   locale: z.enum(["ja", "vi", "en"]).optional(),
   avatarUrl: z.string().optional(),
+  countryOfOrigin: z.string().max(100).optional().nullable(),
+  dateOfBirth: z.string().optional().nullable(),
+  gender: z.string().max(50).optional().nullable(),
+  address: z.string().max(500).optional().nullable(),
+  phoneNumber: z.string().max(50).optional().nullable(),
+  jobDescription: z.string().max(500).optional().nullable(),
+  hireDate: z.string().optional().nullable(),
 })
 
 type RouteParams = {

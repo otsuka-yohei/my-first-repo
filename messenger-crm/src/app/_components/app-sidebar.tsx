@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, MessageSquare, Settings, Users } from "lucide-react"
+import { BarChart3, MessageSquare, Settings, Users, Send } from "lucide-react"
 
 const NAV_ITEMS = [
   { id: "chat", href: "/", icon: MessageSquare, label: "相談" },
   { id: "users", href: "/users", icon: Users, label: "顧客" },
+  { id: "broadcast", href: "/broadcast", icon: Send, label: "一斉送信" },
   { id: "reports", href: "/reports", icon: BarChart3, label: "レポート" },
   { id: "settings", href: "/settings", icon: Settings, label: "設定" },
 ]
