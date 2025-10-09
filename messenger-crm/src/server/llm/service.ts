@@ -315,11 +315,14 @@ export async function enrichMessageWithLLM(params: {
   language: string
   targetLanguage: string
   workerLocale?: string
+  managerLocale?: string
 }): Promise<EnrichmentResult> {
-  // Workerのlocaleが日本語以外の場合、AI返信に翻訳を追加
+  // ログイン中のマネージャーの表示言語でAI返信を生成
+  // マネージャーの言語とワーカーの言語が異なる場合、ワーカーの言語での翻訳を追加
+  const suggestionLanguage = params.managerLocale ?? params.targetLanguage
   const shouldTranslateSuggestions = params.workerLocale &&
-    !params.workerLocale.toLowerCase().startsWith('ja') &&
-    params.targetLanguage !== params.workerLocale
+    params.managerLocale &&
+    params.workerLocale.toLowerCase() !== params.managerLocale.toLowerCase()
 
   const [translation, suggestions] = await Promise.all([
     translateMessage({
@@ -329,7 +332,7 @@ export async function enrichMessageWithLLM(params: {
     }),
     generateSuggestedReplies({
       transcript: params.content,
-      language: params.targetLanguage,
+      language: suggestionLanguage,
       persona: "agent",
       targetTranslationLanguage: shouldTranslateSuggestions ? params.workerLocale : undefined,
     }),

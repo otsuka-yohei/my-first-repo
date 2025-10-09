@@ -52,6 +52,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.userId = user.id
         token.role = (user.role ?? "WORKER") as UserRole
+        token.locale = (user as any).locale ?? "ja-JP"
       }
       return token
     },
@@ -59,6 +60,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user) {
         session.user.id = token.userId as string
         session.user.role = token.role as UserRole
+        session.user.locale = token.locale as string
       }
       return session
     },

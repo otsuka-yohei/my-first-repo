@@ -266,8 +266,16 @@ export async function appendMessage(params: {
   // LLM処理をバックグラウンドで実行（レスポンスを待たない）
   const targetLanguage =
     params.user.role === UserRole.WORKER ? "ja" : conversation.worker.locale ?? "vi"
+  const managerLocale = params.user.role === UserRole.WORKER ? undefined : (params.user as SessionUser & { locale?: string }).locale
 
-  void enrichMessageInBackground(message.id, message.body, message.language, targetLanguage, conversation.worker.locale ?? undefined)
+  void enrichMessageInBackground(
+    message.id,
+    message.body,
+    message.language,
+    targetLanguage,
+    conversation.worker.locale ?? undefined,
+    managerLocale
+  )
   void regenerateConversationSegmentsInBackground(params.conversationId)
 
   return createdMessage
@@ -279,6 +287,7 @@ async function enrichMessageInBackground(
   language: string,
   targetLanguage: string,
   workerLocale?: string,
+  managerLocale?: string,
 ) {
   try {
     console.log(`[background] Starting LLM enrichment for message ${messageId}`)
@@ -289,6 +298,7 @@ async function enrichMessageInBackground(
       language,
       targetLanguage,
       workerLocale,
+      managerLocale,
     })
 
     await prisma.messageLLMArtifact.upsert({
@@ -401,6 +411,7 @@ export async function regenerateMessageSuggestions(params: {
   }
 
   const targetLanguage = conversation.worker?.locale ?? "vi"
+  const managerLocale = (params.user as SessionUser & { locale?: string }).locale
 
   let enrichment: Awaited<ReturnType<typeof enrichMessageWithLLM>>
   try {
@@ -409,6 +420,7 @@ export async function regenerateMessageSuggestions(params: {
       language: latestWorkerMessage.language,
       targetLanguage,
       workerLocale: conversation.worker?.locale ?? undefined,
+      managerLocale,
     })
   } catch (error) {
     console.error("Failed to regenerate message suggestions", error)

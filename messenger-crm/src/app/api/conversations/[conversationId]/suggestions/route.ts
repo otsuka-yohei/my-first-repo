@@ -19,7 +19,7 @@ export async function POST(_: NextRequest, { params }: RouteParams) {
   try {
     const message = await regenerateMessageSuggestions({
       conversationId,
-      user: { id: session.user.id, role: session.user.role },
+      user: { id: session.user.id, role: session.user.role, locale: session.user.locale },
     })
 
     return NextResponse.json({ message })

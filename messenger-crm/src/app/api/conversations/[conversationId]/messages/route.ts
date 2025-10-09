@@ -58,7 +58,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   try {
     const message = await appendMessage({
       conversationId,
-      user: { id: session.user.id, role: session.user.role },
+      user: { id: session.user.id, role: session.user.role, locale: session.user.locale },
       body: parsed.data.body,
       language: parsed.data.language,
       type: parsed.data.type,
