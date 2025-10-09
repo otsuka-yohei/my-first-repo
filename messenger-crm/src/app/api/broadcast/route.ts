@@ -5,6 +5,7 @@ import { UserRole } from "@prisma/client"
 import { auth } from "@/auth"
 import { prisma } from "@/server/db"
 import { AuthorizationError } from "@/server/auth/permissions"
+import { translateMessage } from "@/server/llm/service"
 
 const broadcastSchema = z.object({
   groupId: z.string(),
@@ -120,16 +121,48 @@ export async function POST(req: NextRequest) {
           })
         }
 
+        // ワーカーの言語に合わせて翻訳
+        const senderLanguage = session.user.locale || "ja"
+        const recipientLanguage = recipient.locale || "vi"
+        let translation: string | null = null
+        let translationLang: string | null = null
+
+        // 言語が異なる場合のみ翻訳
+        if (senderLanguage !== recipientLanguage) {
+          try {
+            const translationResult = await translateMessage({
+              content: message,
+              sourceLanguage: senderLanguage,
+              targetLanguage: recipientLanguage,
+            })
+            translation = translationResult.translation
+            translationLang = recipientLanguage
+          } catch (error) {
+            console.error(`Translation failed for recipient ${recipient.id}:`, error)
+          }
+        }
+
         // メッセージを作成
         const createdMessage = await prisma.message.create({
           data: {
             conversationId: conversation.id,
             senderId: session.user.id,
             body: message,
-            language: session.user.locale || "ja",
+            language: senderLanguage,
             type: "TEXT",
           },
         })
+
+        // 翻訳がある場合はLLMArtifactを作成
+        if (translation) {
+          await prisma.lLMArtifact.create({
+            data: {
+              messageId: createdMessage.id,
+              translation,
+              translationLang,
+            },
+          })
+        }
 
         // 会話を更新
         await prisma.conversation.update({

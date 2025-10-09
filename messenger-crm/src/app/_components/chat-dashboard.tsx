@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Bot, MessageSquare, Settings, X } from "lucide-react"
+import { Bot, ExternalLink, MessageSquare, Settings, X } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -100,6 +100,36 @@ type WorkerOption = {
 }
 
 const DEFAULT_LANGUAGE = "ja"
+
+// URL検出用の正規表現
+const URL_REGEX = /(https?:\/\/[^\s]+)/g
+
+// URLを検出してリンク化する関数
+function extractUrls(text: string): string[] {
+  const matches = text.match(URL_REGEX)
+  return matches ? Array.from(new Set(matches)) : []
+}
+
+// テキストをURLでリンク化
+function linkifyText(text: string) {
+  const parts = text.split(URL_REGEX)
+  return parts.map((part, index) => {
+    if (part.match(URL_REGEX)) {
+      return (
+        <a
+          key={index}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline decoration-1 underline-offset-2 hover:decoration-2"
+        >
+          {part}
+        </a>
+      )
+    }
+    return part
+  })
+}
 
 function usePreferredLanguage(defaultLanguage = DEFAULT_LANGUAGE) {
   const [language, setLanguage] = useState(defaultLanguage)
@@ -1023,8 +1053,16 @@ function WorkerChatDashboard({
         {selectedManager && selectedConversationId ? (
           <ChatView
             conversation={
-              conversationDetail
-                ? { ...conversationDetail, messages }
+              conversationDetail && selectedManager
+                ? {
+                    ...conversationDetail,
+                    messages,
+                    worker: {
+                      id: selectedManager.id,
+                      name: selectedManager.name,
+                      locale: null,
+                    },
+                  }
                 : null
             }
             messages={displayMessages}
@@ -1113,8 +1151,14 @@ function ChatView({
           <div className="border-b px-6 py-4">
             <p className="text-lg font-semibold">{conversation.worker.name ?? "相談"}</p>
             {conversation.worker.locale ? (
-              <p className="text-xs text-muted-foreground">{getLocaleLabel(conversation.worker.locale)}</p>
-            ) : null}
+              <p className="text-xs text-muted-foreground">
+                {[getLocaleLabel(conversation.worker.locale), conversation.group.name]
+                  .filter(Boolean)
+                  .join(" ・ ")}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">{conversation.group.name}</p>
+            )}
           </div>
           <div ref={mergedRef} className="flex-1 min-h-0 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
             {loadingMessages ? (
@@ -1132,22 +1176,23 @@ function ChatView({
                 const translation = message.llmArtifact?.translation?.trim()
                 const medicalFacilities = message.llmArtifact?.extra?.medicalFacilities
                 const healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
+                const urls = extractUrls(message.body)
 
                 return (
                   <div key={message.id}>
                     <div className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
                       <div
-                        className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                        className={`max-w-[75%] min-w-0 rounded-2xl px-4 py-3 shadow-sm ${
                           isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
                         }`}
                       >
                         <div className="space-y-3">
                           <p
-                            className={`whitespace-pre-wrap text-sm leading-relaxed ${
+                            className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
                               isWorker ? "text-slate-800" : "text-white"
                             }`}
                           >
-                            {message.body}
+                            {linkifyText(message.body)}
                           </p>
                           {translation ? (
                             <div
@@ -1157,9 +1202,12 @@ function ChatView({
                                   : "border-white/40 text-white/80"
                               }`}
                             >
-                              <p className="whitespace-pre-wrap">{translation}</p>
+                              <p className="whitespace-pre-wrap break-words">{linkifyText(translation)}</p>
                             </div>
                           ) : null}
+                          {urls.map((url, index) => (
+                            <UrlPreviewCard key={`${message.id}-url-${index}`} url={url} isWorker={isWorker} />
+                          ))}
                         </div>
                         <p className={`mt-3 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
                           {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
@@ -1650,11 +1698,11 @@ function ConversationListItem({
       <Avatar className="h-10 w-10">
         <AvatarFallback>{getInitials(conversation.worker?.name)}</AvatarFallback>
       </Avatar>
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold">{conversation.worker?.name ?? "相談"}</p>
-            <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold truncate">{conversation.worker?.name ?? "相談"}</p>
+            <p className="mt-1 line-clamp-1 text-xs text-muted-foreground break-words">
               {conversation.lastMessage?.body ?? "まだメッセージがありません"}
             </p>
           </div>
@@ -1766,4 +1814,81 @@ function getLastMessageTime(conversations: ConversationSummary[], manager: Worke
   const summary = conversations.find((conversation) => manager.groupIds.includes(conversation.group.id))
   if (!summary) return "--"
   return formatRelativeTime(summary.updatedAt)
+}
+
+// URLプレビューカードコンポーネント
+function UrlPreviewCard({ url, isWorker }: { url: string; isWorker: boolean }) {
+  const [preview, setPreview] = useState<{
+    title?: string
+    description?: string
+    image?: string
+    domain?: string
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchPreview() {
+      try {
+        // ドメイン情報を取得
+        const urlObj = new URL(url)
+        const domain = urlObj.hostname
+
+        setPreview({ domain })
+        setLoading(false)
+      } catch (err) {
+        if (!cancelled) {
+          setError(true)
+          setLoading(false)
+        }
+      }
+    }
+
+    void fetchPreview()
+
+    return () => {
+      cancelled = true
+    }
+  }, [url])
+
+  if (loading || error || !preview) {
+    return null
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`mt-3 block rounded-lg border ${
+        isWorker
+          ? "border-slate-200 bg-slate-50 hover:bg-slate-100"
+          : "border-white/20 bg-white/10 hover:bg-white/20"
+      } p-3 transition-colors`}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <ExternalLink className={`h-4 w-4 shrink-0 ${isWorker ? "text-slate-600" : "text-white/80"}`} />
+            <p
+              className={`truncate text-sm font-medium ${
+                isWorker ? "text-slate-900" : "text-white"
+              }`}
+            >
+              {preview.domain ?? "リンク"}
+            </p>
+          </div>
+          <p
+            className={`mt-1 text-xs break-all ${
+              isWorker ? "text-slate-500" : "text-white/70"
+            }`}
+          >
+            {url}
+          </p>
+        </div>
+      </div>
+    </a>
+  )
 }
