@@ -88,6 +88,15 @@ export interface SuggestedReply {
   translationLang?: string
 }
 
+export interface FollowUpSuggestion {
+  content: string
+  tone: "check-in" | "gentle-follow-up" | "continuation" | "encouragement"
+  language: string
+  translation?: string
+  translationLang?: string
+  timing?: "immediate" | "after-3-days" | "after-7-days"
+}
+
 export interface SuggestionRequest {
   transcript: string
   language: string
@@ -310,6 +319,12 @@ export async function generateSuggestedReplies(
   return suggestions
 }
 
+function normalizeLocale(locale: string | undefined): string | undefined {
+  if (!locale) return undefined
+  // "ja-JP" -> "ja", "vi-VN" -> "vi"
+  return locale.split("-")[0].toLowerCase()
+}
+
 export async function enrichMessageWithLLM(params: {
   content: string
   language: string
@@ -319,10 +334,16 @@ export async function enrichMessageWithLLM(params: {
 }): Promise<EnrichmentResult> {
   // ログイン中のマネージャーの表示言語でAI返信を生成
   // マネージャーの言語とワーカーの言語が異なる場合、ワーカーの言語での翻訳を追加
-  const suggestionLanguage = params.managerLocale ?? params.targetLanguage
-  const shouldTranslateSuggestions = params.workerLocale &&
-    params.managerLocale &&
-    params.workerLocale.toLowerCase() !== params.managerLocale.toLowerCase()
+  const normalizedManagerLocale = normalizeLocale(params.managerLocale)
+  const normalizedWorkerLocale = normalizeLocale(params.workerLocale)
+
+  // AI返信はマネージャーの表示言語で生成（デフォルト: 日本語）
+  const suggestionLanguage = normalizedManagerLocale ?? "ja"
+
+  // マネージャーとワーカーの言語が異なる場合のみ翻訳を追加
+  const shouldTranslateSuggestions = normalizedWorkerLocale &&
+    normalizedManagerLocale &&
+    normalizedWorkerLocale !== normalizedManagerLocale
 
   const [translation, suggestions] = await Promise.all([
     translateMessage({
@@ -334,7 +355,7 @@ export async function enrichMessageWithLLM(params: {
       transcript: params.content,
       language: suggestionLanguage,
       persona: "agent",
-      targetTranslationLanguage: shouldTranslateSuggestions ? params.workerLocale : undefined,
+      targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
     }),
   ])
 
@@ -545,4 +566,198 @@ export async function segmentConversation(
       endedAt: new Date(request.messages[request.messages.length - 1].createdAt),
     }]
   }
+}
+
+export interface FollowUpRequest {
+  conversationHistory: Array<{
+    body: string
+    senderRole: string
+    createdAt: Date | string
+  }>
+  workerLocale: string
+  managerLocale: string
+  daysSinceLastWorkerMessage: number
+}
+
+function determineFollowUpTone(daysSinceLastMessage: number): string {
+  if (daysSinceLastMessage > 7) {
+    return "check-in"
+  } else if (daysSinceLastMessage > 3) {
+    return "gentle-follow-up"
+  } else {
+    return "continuation"
+  }
+}
+
+export async function generateFollowUpSuggestions(
+  request: FollowUpRequest,
+): Promise<FollowUpSuggestion[]> {
+  const tone = determineFollowUpTone(request.daysSinceLastWorkerMessage)
+  const normalizedManagerLocale = normalizeLocale(request.managerLocale)
+  const normalizedWorkerLocale = normalizeLocale(request.workerLocale)
+
+  // 会話履歴を要約
+  const recentMessages = request.conversationHistory.slice(-5) // 直近5件
+  const transcript = recentMessages
+    .map((msg) => {
+      const time = new Date(msg.createdAt).toLocaleString("ja-JP")
+      const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
+      return `[${time}] ${role}: ${msg.body}`
+    })
+    .join("\n")
+
+  let contextDescription = ""
+  if (tone === "check-in") {
+    contextDescription = "前回の会話から1週間以上経過しています。ワーカーの現在の状況や悩みを確認する、温かみのあるメッセージを提案してください。"
+  } else if (tone === "gentle-follow-up") {
+    contextDescription = "前回の会話から3日以上経過しています。前回の話題について優しくフォローアップするメッセージを提案してください。"
+  } else {
+    contextDescription = "会話の流れを継続し、ワーカーが安心して相談できるような、次の質問や確認のメッセージを提案してください。"
+  }
+
+  const prompt =
+    `あなたは外国人労働者をサポートする経験豊富なマネージャーです。以下の会話履歴に基づいて、` +
+    `ワーカーに送る次のメッセージを${normalizedManagerLocale ?? "ja"}で3つ提案してください。\n\n` +
+    `${contextDescription}\n\n` +
+    `IMPORTANT: 以下の形式で正確に3つのメッセージを返してください（1行に1つ）:\n` +
+    `${tone}: [メッセージ内容1]\n` +
+    `${tone}: [メッセージ内容2]\n` +
+    `${tone}: [メッセージ内容3]\n\n` +
+    `番号付けやマークダウン形式は使用しないでください。\n\n` +
+    `会話履歴:\n${transcript}\n\n` +
+    `前回のワーカーからのメッセージからの経過日数: ${Math.round(request.daysSinceLastWorkerMessage)} 日`
+
+  const output = await safeGenerateText(suggestModel, prompt, `follow-up-${tone}`)
+
+  if (!output) {
+    console.log("[llm] follow-up: No output from LLM, returning default suggestions")
+    return getDefaultFollowUpSuggestions(tone, normalizedManagerLocale ?? "ja")
+  }
+
+  console.log("[llm] Raw follow-up output:", output)
+
+  const suggestions = output
+    .split("\n")
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .map((line) => {
+      const colonIndex = line.indexOf(":")
+      if (colonIndex === -1) {
+        return {
+          content: line,
+          tone: tone as FollowUpSuggestion["tone"],
+          language: normalizedManagerLocale ?? "ja",
+        }
+      }
+
+      const content = line.substring(colonIndex + 1).trim()
+      return {
+        content: content || line,
+        tone: tone as FollowUpSuggestion["tone"],
+        language: normalizedManagerLocale ?? "ja",
+      }
+    })
+    .filter((s) => s.content.length > 0)
+
+  console.log("[llm] Parsed follow-up suggestions:", JSON.stringify(suggestions, null, 2))
+
+  if (suggestions.length === 0) {
+    console.error("[llm] Failed to parse any follow-up suggestions from output")
+    return getDefaultFollowUpSuggestions(tone, normalizedManagerLocale ?? "ja")
+  }
+
+  // 翻訳が必要な場合
+  if (normalizedWorkerLocale && normalizedManagerLocale && normalizedWorkerLocale !== normalizedManagerLocale) {
+    console.log(`[llm] Translating follow-up suggestions from ${normalizedManagerLocale} to ${normalizedWorkerLocale}`)
+
+    try {
+      const translatedSuggestions = await Promise.all(
+        suggestions.map(async (suggestion, index) => {
+          try {
+            const translationResult = await translateMessage({
+              content: suggestion.content,
+              sourceLanguage: normalizedManagerLocale ?? "ja",
+              targetLanguage: normalizedWorkerLocale,
+            })
+
+            console.log(`[llm] Follow-up suggestion ${index + 1}/${suggestions.length} translated successfully`)
+
+            return {
+              ...suggestion,
+              translation: translationResult.translation,
+              translationLang: normalizedWorkerLocale,
+            }
+          } catch (error) {
+            console.error(`[llm] Failed to translate follow-up suggestion ${index + 1}:`, error instanceof Error ? error.message : String(error))
+            return suggestion
+          }
+        })
+      )
+
+      return translatedSuggestions
+    } catch (error) {
+      console.error("[llm] Critical error during follow-up translation:", error instanceof Error ? error.message : String(error))
+      return suggestions
+    }
+  }
+
+  return suggestions
+}
+
+function getDefaultFollowUpSuggestions(tone: string, language: string): FollowUpSuggestion[] {
+  const defaults: Record<string, FollowUpSuggestion[]> = {
+    "check-in": [
+      {
+        content: "お元気ですか？最近何か困っていることはありませんか？",
+        tone: "check-in",
+        language,
+      },
+      {
+        content: "調子はどうですか？何か心配事があれば遠慮なく相談してくださいね。",
+        tone: "check-in",
+        language,
+      },
+      {
+        content: "最近の様子を教えてください。何か変わったことはありましたか？",
+        tone: "check-in",
+        language,
+      },
+    ],
+    "gentle-follow-up": [
+      {
+        content: "前回の件、その後いかがですか？",
+        tone: "gentle-follow-up",
+        language,
+      },
+      {
+        content: "お話しした内容について、何か進展はありましたか？",
+        tone: "gentle-follow-up",
+        language,
+      },
+      {
+        content: "前回相談いただいた件、解決できましたか？",
+        tone: "gentle-follow-up",
+        language,
+      },
+    ],
+    "continuation": [
+      {
+        content: "他に何か気になることはありますか？",
+        tone: "continuation",
+        language,
+      },
+      {
+        content: "何か他に相談したいことがあれば、いつでもどうぞ。",
+        tone: "continuation",
+        language,
+      },
+      {
+        content: "わからないことがあれば、気軽に聞いてくださいね。",
+        tone: "continuation",
+        language,
+      },
+    ],
+  }
+
+  return defaults[tone] ?? defaults["continuation"]
 }

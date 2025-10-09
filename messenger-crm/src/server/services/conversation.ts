@@ -2,7 +2,7 @@ import { MessageType, UserRole, Prisma } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM, segmentConversation } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation, generateFollowUpSuggestions } from "@/server/llm/service"
 
 interface SessionUser {
   id: string
@@ -266,16 +266,32 @@ export async function appendMessage(params: {
   // LLM処理をバックグラウンドで実行（レスポンスを待たない）
   const targetLanguage =
     params.user.role === UserRole.WORKER ? "ja" : conversation.worker.locale ?? "vi"
-  const managerLocale = params.user.role === UserRole.WORKER ? undefined : (params.user as SessionUser & { locale?: string }).locale
+  // ワーカーがメッセージを送信した場合、マネージャーの言語はデフォルト（日本語）
+  // マネージャーがメッセージを送信した場合、マネージャーのlocaleを使用
+  const managerLocale = params.user.role === UserRole.WORKER
+    ? "ja"
+    : (params.user as SessionUser & { locale?: string }).locale
 
-  void enrichMessageInBackground(
-    message.id,
-    message.body,
-    message.language,
-    targetLanguage,
-    conversation.worker.locale ?? undefined,
-    managerLocale
-  )
+  if (params.user.role === UserRole.WORKER) {
+    // ワーカーからのメッセージ: マネージャー向けAI返信を生成
+    void enrichMessageInBackground(
+      message.id,
+      message.body,
+      message.language,
+      targetLanguage,
+      conversation.worker.locale ?? undefined,
+      managerLocale
+    )
+  } else {
+    // マネージャーからのメッセージ: フォローアップ提案を生成
+    void generateFollowUpInBackground(
+      message.id,
+      params.conversationId,
+      conversation.worker.locale ?? undefined,
+      managerLocale
+    )
+  }
+
   void regenerateConversationSegmentsInBackground(params.conversationId)
 
   return createdMessage
@@ -328,6 +344,83 @@ async function enrichMessageInBackground(
     console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
   } catch (error) {
     console.error(`[background] Failed to enrich message ${messageId}:`, error)
+  }
+}
+
+async function generateFollowUpInBackground(
+  messageId: string,
+  conversationId: string,
+  workerLocale?: string,
+  managerLocale?: string,
+) {
+  try {
+    console.log(`[background] Starting follow-up generation for message ${messageId}`)
+    const startTime = Date.now()
+
+    // 会話履歴を取得
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: 10, // 直近10件
+          include: {
+            sender: { select: { role: true } },
+          },
+        },
+      },
+    })
+
+    if (!conversation || conversation.messages.length === 0) {
+      console.log(`[background] No messages found for conversation ${conversationId}`)
+      return
+    }
+
+    // メッセージを時系列順に並べ替え
+    const sortedMessages = [...conversation.messages].reverse()
+
+    // 最後のワーカーメッセージを探す
+    const lastWorkerMessage = sortedMessages.findLast((msg) => msg.sender.role === UserRole.WORKER)
+
+    // ワーカーからの最後のメッセージからの経過時間を計算
+    let daysSinceLastWorkerMessage = 0
+    if (lastWorkerMessage) {
+      const timeDiff = Date.now() - new Date(lastWorkerMessage.createdAt).getTime()
+      daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
+    } else {
+      // ワーカーからのメッセージがない場合は、会話開始からの経過時間
+      const timeDiff = Date.now() - new Date(conversation.createdAt).getTime()
+      daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
+    }
+
+    // フォローアップ提案を生成
+    const followUpSuggestions = await generateFollowUpSuggestions({
+      conversationHistory: sortedMessages.map((msg) => ({
+        body: msg.body,
+        senderRole: msg.sender.role,
+        createdAt: msg.createdAt,
+      })),
+      workerLocale: workerLocale ?? "vi",
+      managerLocale: managerLocale ?? "ja",
+      daysSinceLastWorkerMessage,
+    })
+
+    // データベースに保存
+    await prisma.messageLLMArtifact.upsert({
+      where: { messageId },
+      update: {
+        followUpSuggestions: followUpSuggestions as unknown as Prisma.InputJsonValue,
+      },
+      create: {
+        messageId,
+        followUpSuggestions: followUpSuggestions as unknown as Prisma.InputJsonValue,
+      },
+    })
+
+    const duration = Date.now() - startTime
+    console.log(`[background] Follow-up generation completed for message ${messageId} in ${duration}ms (${followUpSuggestions.length} suggestions)`)
+  } catch (error) {
+    console.error(`[background] Failed to generate follow-up for message ${messageId}:`, error)
   }
 }
 
@@ -411,7 +504,7 @@ export async function regenerateMessageSuggestions(params: {
   }
 
   const targetLanguage = conversation.worker?.locale ?? "vi"
-  const managerLocale = (params.user as SessionUser & { locale?: string }).locale
+  const managerLocale = (params.user as SessionUser & { locale?: string }).locale ?? "ja"
 
   let enrichment: Awaited<ReturnType<typeof enrichMessageWithLLM>>
   try {

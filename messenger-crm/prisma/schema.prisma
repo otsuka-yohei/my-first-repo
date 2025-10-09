@@ -95,6 +95,9 @@ model Group {
   description    String?
   memberships    GroupMembership[]
   conversations  Conversation[]
+  isDeleted      Boolean           @default(false)
+  deletedAt      DateTime?
+  deletedBy      String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -145,15 +148,16 @@ model Message {
 }
 
 model MessageLLMArtifact {
-  id              String   @id @default(cuid())
-  message         Message  @relation(fields: [messageId], references: [id])
-  messageId       String   @unique
-  translation     String?
-  translationLang String?
-  suggestions     Json?
-  sentiment       String?
-  extra           Json?
-  createdAt       DateTime @default(now())
+  id                  String   @id @default(cuid())
+  message             Message  @relation(fields: [messageId], references: [id])
+  messageId           String   @unique
+  translation         String?
+  translationLang     String?
+  suggestions         Json?
+  followUpSuggestions Json?
+  sentiment           String?
+  extra               Json?
+  createdAt           DateTime @default(now())
 }
 
 model ConsultationCase {
