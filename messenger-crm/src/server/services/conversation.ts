@@ -1,8 +1,8 @@
-import { MessageType, UserRole, Prisma } from "@prisma/client"
+import { MessageType, UserRole, Prisma, MembershipRole } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM, segmentConversation, generateFollowUpSuggestions, analyzeHealthConsultation } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation, analyzeHealthConsultation } from "@/server/llm/service"
 import { searchMedicalFacilities, type MedicalFacility } from "@/server/services/medical"
 
 interface SessionUser {
@@ -290,6 +290,58 @@ export async function appendMessage(params: {
   return createdMessage
 }
 
+/**
+ * システムメッセージを会話に送信
+ */
+async function sendSystemMessage(params: {
+  conversationId: string
+  body: string
+  language?: string
+  metadata?: Record<string, unknown>
+}) {
+  // システムユーザー（会話の最初のマネージャーを使用）
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: params.conversationId },
+    include: {
+      group: {
+        include: {
+          memberships: {
+            where: { role: MembershipRole.MANAGER },
+            take: 1,
+            include: { user: true },
+          },
+        },
+      },
+    },
+  })
+
+  if (!conversation?.group.memberships[0]) {
+    console.error("[system-message] No manager found for conversation")
+    return null
+  }
+
+  const systemSenderId = conversation.group.memberships[0].userId
+
+  const message = await prisma.message.create({
+    data: {
+      conversationId: params.conversationId,
+      senderId: systemSenderId,
+      body: params.body,
+      language: params.language || "ja",
+      type: MessageType.SYSTEM,
+      metadata: params.metadata as Prisma.InputJsonValue,
+    },
+  })
+
+  await prisma.conversation.update({
+    where: { id: params.conversationId },
+    data: { updatedAt: new Date() },
+  })
+
+  console.log(`[system-message] Created system message ${message.id}`)
+  return message
+}
+
 async function enrichMessageInBackground(
   messageId: string,
   conversationId: string,
@@ -403,7 +455,7 @@ async function enrichMessageInBackground(
 
     console.log("[background] Health consultation analysis:", healthAnalysis)
 
-    // 健康相談で医療機関が必要な場合、自動検索
+    // 健康相談で医療機関が必要な場合、自動検索してシステムメッセージを送信
     if (
       healthAnalysis.isHealthRelated &&
       healthAnalysis.needsMedicalFacility &&
@@ -418,9 +470,35 @@ async function enrichMessageInBackground(
           urgency: healthAnalysis.urgency,
         })
         console.log(`[background] Found ${medicalFacilities.length} medical facilities`)
+
+        // 医療機関が見つかった場合、システムメッセージとして送信
+        if (medicalFacilities.length > 0) {
+          const facilityMessage = `近隣の医療機関を${medicalFacilities.length}件見つけました。以下の医療機関をご検討ください。`
+          await sendSystemMessage({
+            conversationId,
+            body: facilityMessage,
+            language: conversation.worker.locale || "ja",
+            metadata: {
+              type: "medical_facilities",
+              facilities: medicalFacilities,
+              healthAnalysis,
+            },
+          })
+        }
       } catch (error) {
         console.error("[background] Failed to search medical facilities:", error)
       }
+    } else if (healthAnalysis.isHealthRelated && !healthAnalysis.hasAddress) {
+      // 住所が未登録の場合、システムメッセージで通知
+      await sendSystemMessage({
+        conversationId,
+        body: "医療機関を検索するには、設定ページから住所を登録してください。",
+        language: conversation.worker.locale || "ja",
+        metadata: {
+          type: "medical_address_required",
+          healthAnalysis,
+        },
+      })
     }
 
     const extraData: Record<string, unknown> = {
@@ -511,14 +589,34 @@ async function regenerateConversationSegmentsInBackground(conversationId: string
 }
 
 export async function regenerateMessageSuggestions(params: {
-  user: SessionUser
+  user: SessionUser & { locale?: string }
   conversationId: string
 }) {
   const conversation = await prisma.conversation.findUnique({
     where: { id: params.conversationId },
     include: {
-      group: { select: { id: true } },
-      worker: { select: { id: true, locale: true } },
+      group: { select: { id: true, name: true, phoneNumber: true, address: true } },
+      worker: {
+        select: {
+          id: true,
+          name: true,
+          locale: true,
+          countryOfOrigin: true,
+          dateOfBirth: true,
+          gender: true,
+          address: true,
+          phoneNumber: true,
+          jobDescription: true,
+          hireDate: true,
+        },
+      },
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 10,
+        include: {
+          sender: { select: { role: true } },
+        },
+      },
     },
   })
 
@@ -528,6 +626,69 @@ export async function regenerateMessageSuggestions(params: {
 
   await ensureConversationAccess(params.user, conversation)
 
+  const targetLanguage = conversation.worker?.locale ?? "vi"
+  const managerLocale = params.user.locale ?? "ja"
+
+  // メッセージがない場合は初回メッセージ用の提案を生成
+  if (conversation.messages.length === 0) {
+    // 初回挨拶メッセージを生成
+    const enrichment = await enrichMessageWithLLM({
+      content: "", // 空のコンテンツで初回メッセージを生成
+      language: targetLanguage,
+      targetLanguage: managerLocale,
+      workerLocale: targetLanguage,
+      managerLocale,
+      conversationHistory: [],
+      workerInfo: {
+        name: conversation.worker.name,
+        locale: conversation.worker.locale,
+        countryOfOrigin: conversation.worker.countryOfOrigin,
+        dateOfBirth: conversation.worker.dateOfBirth,
+        gender: conversation.worker.gender,
+        address: conversation.worker.address,
+        phoneNumber: conversation.worker.phoneNumber,
+        jobDescription: conversation.worker.jobDescription,
+        hireDate: conversation.worker.hireDate,
+      },
+      groupInfo: {
+        name: conversation.group.name,
+        phoneNumber: conversation.group.phoneNumber,
+        address: conversation.group.address,
+      },
+      daysSinceLastWorkerMessage: 0,
+      isInitialMessage: true, // 初回メッセージフラグ
+    })
+
+    // 仮のメッセージオブジェクトを返す（実際にはDBに保存しない）
+    return {
+      id: `virtual-${conversation.id}`,
+      conversationId: conversation.id,
+      senderId: params.user.id,
+      body: "",
+      language: managerLocale,
+      type: "TEXT" as const,
+      contentUrl: null,
+      metadata: null,
+      createdAt: new Date(),
+      sender: {
+        id: params.user.id,
+        name: params.user.name ?? null,
+        role: params.user.role,
+      },
+      llmArtifact: {
+        id: `virtual-artifact-${conversation.id}`,
+        messageId: `virtual-${conversation.id}`,
+        translation: null,
+        translationLang: null,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.JsonValue,
+        extra: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    }
+  }
+
+  // 既存のロジック：最新のワーカーメッセージから提案を生成
   const latestWorkerMessage = await prisma.message.findFirst({
     where: {
       conversationId: params.conversationId,
@@ -540,9 +701,6 @@ export async function regenerateMessageSuggestions(params: {
     throw new Error("No worker message available for suggestions")
   }
 
-  const targetLanguage = conversation.worker?.locale ?? "vi"
-  const managerLocale = (params.user as SessionUser & { locale?: string }).locale ?? "ja"
-
   let enrichment: Awaited<ReturnType<typeof enrichMessageWithLLM>>
   try {
     enrichment = await enrichMessageWithLLM({
@@ -551,6 +709,28 @@ export async function regenerateMessageSuggestions(params: {
       targetLanguage,
       workerLocale: conversation.worker?.locale ?? undefined,
       managerLocale,
+      conversationHistory: conversation.messages.reverse().map((msg) => ({
+        body: msg.body,
+        senderRole: msg.sender.role,
+        createdAt: msg.createdAt,
+      })),
+      workerInfo: {
+        name: conversation.worker.name,
+        locale: conversation.worker.locale,
+        countryOfOrigin: conversation.worker.countryOfOrigin,
+        dateOfBirth: conversation.worker.dateOfBirth,
+        gender: conversation.worker.gender,
+        address: conversation.worker.address,
+        phoneNumber: conversation.worker.phoneNumber,
+        jobDescription: conversation.worker.jobDescription,
+        hireDate: conversation.worker.hireDate,
+      },
+      groupInfo: {
+        name: conversation.group.name,
+        phoneNumber: conversation.group.phoneNumber,
+        address: conversation.group.address,
+      },
+      daysSinceLastWorkerMessage: 0,
     })
   } catch (error) {
     console.error("Failed to regenerate message suggestions", error)

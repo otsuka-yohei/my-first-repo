@@ -71,9 +71,6 @@ const HEALTH_CONSULTATION_MODEL = "gemini-2.5-flash"
 const healthConsultationModel = env.GOOGLE_SUGGEST_API_KEY
   ? new GoogleGenerativeAI(env.GOOGLE_SUGGEST_API_KEY).getGenerativeModel({
       model: HEALTH_CONSULTATION_MODEL,
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
     })
   : null
 
@@ -290,33 +287,42 @@ export async function generateSuggestedReplies(
     let contextDescription = ""
     let tones = ["question", "empathy", "solution"]
 
-    // 健康相談の検出
-    const recentWorkerMessages = recentMessages.filter(msg => msg.senderRole === "WORKER").slice(-3)
-    const lastWorkerMessage = recentWorkerMessages[recentWorkerMessages.length - 1]
-    const isHealthRelated = lastWorkerMessage?.body && (
-      /体調|痛|怪我|ケガ|病気|熱|風邪|頭痛|腹痛|咳|吐き気|めまい|病院|医者|診察/.test(lastWorkerMessage.body)
-    )
+    // 初回メッセージの検出
+    const isInitialMessage = recentMessages.length === 0
 
-    if (isHealthRelated) {
-      // 健康相談の場合、症状確認や病院探しをサポート
-      contextDescription = `${workerName}さん（${workerLocale}話者）から健康相談がありました。症状の詳細、いつ病院に行きたいか、怪我の場合は労災の可能性（仕事中か等）を確認し、必要に応じて病院探しをサポートしてください。住所: ${workerDetails.includes("住所:") ? workerDetails.find(d => d.startsWith("住所:")) : "未登録"}`
-      tones = ["empathy", "question", "solution"]
-    } else if (daysSince > 7) {
-      // 7日以上経過: チェックイン型のメッセージ
-      contextDescription = `前回の会話から1週間以上経過しています。${workerName}さん（${workerLocale}話者）の現在の状況や悩みを確認する、温かみのあるメッセージを提案してください。`
-      tones = ["check-in", "check-in", "check-in"]
-    } else if (daysSince > 3) {
-      // 3日以上経過: フォローアップ型
-      contextDescription = `前回の会話から3日以上経過しています。${workerName}さん（${workerLocale}話者）について、前回の話題について優しくフォローアップするメッセージを提案してください。`
-      tones = ["gentle-follow-up", "gentle-follow-up", "continuation"]
-    } else if (isManagerConsecutive) {
-      // マネージャー連投: 継続・励まし型
-      contextDescription = `マネージャーが連続してメッセージを送信しています。${workerName}さん（${workerLocale}話者）が安心して返信できるような、継続や励ましのメッセージを提案してください。`
-      tones = ["continuation", "encouragement", "empathy"]
+    if (isInitialMessage) {
+      // 初回メッセージ: ウェルカムメッセージ
+      contextDescription = `${workerName}さん（${workerLocale}話者）への初回メッセージを作成してください。「このチャットで、業務上の相談やシフト、何か困ったことがあればなんでもメッセージを送ってください。」という趣旨の温かく親しみやすいメッセージを3パターン提案してください。`
+      tones = ["welcome", "welcome", "welcome"]
     } else {
-      // 通常の返信
-      contextDescription = `${workerName}さん（${workerLocale}話者）からのメッセージに対して、適切な返信を提案してください。`
-      tones = ["question", "empathy", "solution"]
+      // 健康相談の検出
+      const recentWorkerMessages = recentMessages.filter(msg => msg.senderRole === "WORKER").slice(-3)
+      const lastWorkerMessage = recentWorkerMessages[recentWorkerMessages.length - 1]
+      const isHealthRelated = lastWorkerMessage?.body && (
+        /体調|痛|怪我|ケガ|病気|熱|風邪|頭痛|腹痛|咳|吐き気|めまい|病院|医者|診察/.test(lastWorkerMessage.body)
+      )
+
+      if (isHealthRelated) {
+        // 健康相談の場合、症状確認や病院探しをサポート
+        contextDescription = `${workerName}さん（${workerLocale}話者）から健康相談がありました。症状の詳細、いつ病院に行きたいか、怪我の場合は労災の可能性（仕事中か等）を確認し、必要に応じて病院探しをサポートしてください。住所: ${workerDetails.includes("住所:") ? workerDetails.find(d => d.startsWith("住所:")) : "未登録"}`
+        tones = ["empathy", "question", "solution"]
+      } else if (daysSince > 7) {
+        // 7日以上経過: チェックイン型のメッセージ
+        contextDescription = `前回の会話から1週間以上経過しています。${workerName}さん（${workerLocale}話者）の現在の状況や悩みを確認する、温かみのあるメッセージを提案してください。`
+        tones = ["check-in", "check-in", "check-in"]
+      } else if (daysSince > 3) {
+        // 3日以上経過: フォローアップ型
+        contextDescription = `前回の会話から3日以上経過しています。${workerName}さん（${workerLocale}話者）について、前回の話題について優しくフォローアップするメッセージを提案してください。`
+        tones = ["gentle-follow-up", "gentle-follow-up", "continuation"]
+      } else if (isManagerConsecutive) {
+        // マネージャー連投: 継続・励まし型
+        contextDescription = `マネージャーが連続してメッセージを送信しています。${workerName}さん（${workerLocale}話者）が安心して返信できるような、継続や励ましのメッセージを提案してください。`
+        tones = ["continuation", "encouragement", "empathy"]
+      } else {
+        // 通常の返信
+        contextDescription = `${workerName}さん（${workerLocale}話者）からのメッセージに対して、適切な返信を提案してください。`
+        tones = ["question", "empathy", "solution"]
+      }
     }
 
     // ワーカー情報セクション
@@ -567,6 +573,7 @@ export async function enrichMessageWithLLM(params: {
     address?: string | null
   }
   daysSinceLastWorkerMessage?: number
+  isInitialMessage?: boolean
 }): Promise<EnrichmentResult> {
   // ログイン中のマネージャーの表示言語でAI返信を生成
   // マネージャーの言語とワーカーの言語が異なる場合、ワーカーの言語での翻訳を追加
@@ -582,13 +589,25 @@ export async function enrichMessageWithLLM(params: {
     normalizedWorkerLocale !== normalizedManagerLocale
 
   const [translation, suggestions] = await Promise.all([
-    translateMessage({
-      content: params.content,
-      sourceLanguage: params.language,
-      targetLanguage: params.targetLanguage,
-    }),
-    // 会話履歴がある場合は新しいEnhanced形式を使用、ない場合は従来の形式
-    params.conversationHistory && params.workerInfo
+    params.content
+      ? translateMessage({
+          content: params.content,
+          sourceLanguage: params.language,
+          targetLanguage: params.targetLanguage,
+        })
+      : Promise.resolve(null as TranslationResult | null),
+    // 初回メッセージの場合は、会話履歴なしで生成
+    params.isInitialMessage && params.workerInfo
+      ? generateSuggestedReplies({
+          conversationHistory: [],
+          workerInfo: params.workerInfo,
+          groupInfo: params.groupInfo,
+          language: suggestionLanguage,
+          persona: "manager",
+          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+          daysSinceLastWorkerMessage: 0,
+        } as EnhancedSuggestionRequest)
+      : params.conversationHistory && params.workerInfo
       ? generateSuggestedReplies({
           conversationHistory: params.conversationHistory,
           workerInfo: params.workerInfo,

@@ -20,7 +20,19 @@ type MessageItem = {
   id: string
   body: string
   language: string
+  type: "TEXT" | "IMAGE" | "FILE" | "SYSTEM"
   createdAt: string
+  metadata?: {
+    type?: string
+    facilities?: MedicalFacility[]
+    healthAnalysis?: {
+      isHealthRelated: boolean
+      symptomType?: string
+      urgency?: string
+      needsMedicalFacility?: boolean
+      suggestedQuestions?: string[]
+    }
+  } | null
   sender: {
     id: string
     name: string | null
@@ -222,6 +234,7 @@ function ManagerChatDashboard({
   const [segments, setSegments] = useState<ConversationSegment[]>([])
   const [loadingSegments, setLoadingSegments] = useState(false)
   const [generatingSegments, setGeneratingSegments] = useState(false)
+  const [initialSuggestions, setInitialSuggestions] = useState<Record<string, Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>>>({})
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workerDirectory = useMemo(() => {
@@ -291,7 +304,7 @@ function ManagerChatDashboard({
                     id: conversation.id,
                     subject: conversation.subject,
                     status: conversation.status,
-                    updatedAt: conversation.updatedAt.toISOString(),
+                    updatedAt: toIsoString(conversation.updatedAt),
                     group: conversation.group,
                     worker: conversation.worker ?? null,
                     lastMessage: null,
@@ -341,6 +354,11 @@ function ManagerChatDashboard({
               : item,
           ),
         )
+
+        // メッセージがない場合は初回メッセージ提案を自動生成
+        if (conversation.messages.length === 0) {
+          void handleRegenerateSuggestions()
+        }
       } catch (error) {
         console.error(error)
         if (!cancelled) {
@@ -416,7 +434,11 @@ function ManagerChatDashboard({
   }, [conversations, searchTerm])
 
   const suggestionItems = useMemo(() => {
-    if (!messages.length) return []
+    // メッセージがない場合は初回提案を使用
+    if (!messages.length && selectedConversationId) {
+      return initialSuggestions[selectedConversationId] ?? []
+    }
+
     const reversed = [...messages].reverse()
     for (const message of reversed) {
       if (message.llmArtifact?.suggestions?.length) {
@@ -424,7 +446,7 @@ function ManagerChatDashboard({
       }
     }
     return []
-  }, [messages])
+  }, [messages, initialSuggestions, selectedConversationId])
 
   const consultation = selectedConversation?.consultation ?? null
 
@@ -623,9 +645,20 @@ function ManagerChatDashboard({
       }
 
       const data = await readJson<{ message: MessageItem }>(res)
-      setMessages((current) =>
-        current.map((message) => (message.id === data.message.id ? data.message : message)),
-      )
+
+      // メッセージが存在する場合は更新、存在しない場合は初回提案として保存
+      const messageExists = messages.some((message) => message.id === data.message.id)
+      if (messageExists) {
+        setMessages((current) =>
+          current.map((message) => (message.id === data.message.id ? data.message : message)),
+        )
+      } else if (selectedConversationId) {
+        // 初回メッセージの場合は初回提案に保存
+        setInitialSuggestions((prev) => ({
+          ...prev,
+          [selectedConversationId]: data.message.llmArtifact?.suggestions ?? [],
+        }))
+      }
     } catch (error) {
       console.error(error)
       setRegenerateError("AI返信の生成に失敗しました。時間をおいて再実行してください。")
@@ -1231,11 +1264,45 @@ function ChatView({
             ) : (
               messages.map((message) => {
                 const isWorker = message.sender.role === "WORKER"
+                const isSystemMessage = message.type === "SYSTEM"
                 const translation = message.llmArtifact?.translation?.trim()
-                const medicalFacilities = message.llmArtifact?.extra?.medicalFacilities
+                const medicalFacilities = message.metadata?.facilities || message.llmArtifact?.extra?.medicalFacilities
                 const healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
                 const urls = extractUrls(message.body)
 
+                // システムメッセージの場合
+                if (isSystemMessage) {
+                  return (
+                    <div key={message.id} className="flex justify-center">
+                      <div className="max-w-[85%] space-y-3">
+                        <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3">
+                          <div className="flex items-start gap-2">
+                            <Bot className="h-5 w-5 shrink-0 text-blue-600 mt-0.5" />
+                            <div className="flex-1">
+                              <p className="text-sm text-blue-900">{message.body}</p>
+                              <p className="mt-2 text-[10px] text-blue-600">
+                                {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 医療機関カードの表示 */}
+                        {medicalFacilities && medicalFacilities.length > 0 && (
+                          <MedicalFacilitiesList
+                            facilities={medicalFacilities}
+                            title="近隣の医療機関"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )
+                }
+
+                // 通常のメッセージ
                 return (
                   <div key={message.id}>
                     <div className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
@@ -1408,27 +1475,32 @@ function ManagerInsightsPanel({
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-800">AI返信</h2>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1"
-              type="button"
-              onClick={onRegenerateSuggestions}
-              disabled={regeneratingSuggestions}
-              aria-busy={regeneratingSuggestions}
-            >
-              <Bot className="h-4 w-4" />
-              {regeneratingSuggestions ? "生成中..." : "再生成"}
-            </Button>
+            {conversation ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                type="button"
+                onClick={onRegenerateSuggestions}
+                disabled={regeneratingSuggestions}
+                aria-busy={regeneratingSuggestions}
+              >
+                <Bot className="h-4 w-4" />
+                {regeneratingSuggestions ? "生成中..." : suggestions.length === 0 ? "生成" : "再生成"}
+              </Button>
+            ) : null}
           </div>
           <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
             {suggestions.length === 0 ? (
-              <p className="text-xs text-muted-foreground">AI返信はまだありません。メッセージを受信すると自動生成されます。</p>
+              <div className="text-center py-8">
+                <p className="text-xs text-muted-foreground mb-4">
+                  {conversation ? "「生成」ボタンをクリックして初回メッセージを生成できます。" : "会話を選択してください。"}
+                </p>
+              </div>
             ) : (
               suggestions.map((suggestion, index) => {
                 const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
                 const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
-                const languageLabel = suggestion.language ? suggestion.language.toUpperCase() : null
                 const { primary, secondary } = splitSuggestionContent(suggestion.content)
                 return (
                   <button
@@ -1438,25 +1510,21 @@ function ManagerInsightsPanel({
                     className="w-full text-left"
                   >
                     <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                      <CardContent className="space-y-3 p-4">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <CardContent className="space-y-2.5 px-4 py-3">
+                        <div className="flex items-center text-xs text-muted-foreground">
                           <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
                             {toneLabel}
                           </Badge>
-                          {languageLabel ? <span>{languageLabel}</span> : null}
                         </div>
-                        <div className="space-y-3 text-sm leading-relaxed text-slate-700">
+                        <div className="space-y-2.5 text-sm leading-relaxed text-slate-700">
                           <p className="whitespace-pre-wrap">{primary}</p>
                           {secondary ? (
-                            <div className="border-t border-slate-200 pt-3 text-slate-600">
+                            <div className="border-t border-slate-200 pt-2.5 text-slate-600">
                               <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
                             </div>
                           ) : null}
                           {suggestion.translation ? (
-                            <div className="border-t border-slate-200 pt-3 text-slate-600">
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                {suggestion.translationLang ?? "翻訳"}
-                              </p>
+                            <div className="border-t border-slate-200 pt-2.5 text-slate-600">
                               <p className="whitespace-pre-wrap text-xs leading-relaxed">{suggestion.translation}</p>
                             </div>
                           ) : null}
