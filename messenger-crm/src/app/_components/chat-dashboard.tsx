@@ -169,6 +169,10 @@ function ManagerChatDashboard({
   const [composer, setComposer] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [selectedSuggestion, setSelectedSuggestion] = useState<{
+    text: string
+    index: number
+  } | null>(null)
   const [removedTags, setRemovedTags] = useState<Record<string, string[]>>({})
   const [customTags, setCustomTags] = useState<Record<string, string[]>>({})
   const [tagDraft, setTagDraft] = useState("")
@@ -343,7 +347,7 @@ function ManagerChatDashboard({
     setSendError(null)
 
     // 楽観的UI更新：送信前に即座にメッセージを表示
-    const optimisticMessage: MessageItem = {
+    const optimisticMessage = {
       id: `temp-${Date.now()}`,
       conversationId: selectedConversationId,
       senderId: currentUser.id,
@@ -355,15 +359,17 @@ function ManagerChatDashboard({
       createdAt: new Date().toISOString(),
       sender: {
         id: currentUser.id,
-        name: currentUser.name,
+        name: currentUser.name ?? null,
         role: currentUser.role,
       },
       llmArtifact: null,
-    }
+    } as MessageItem
 
     const messageToSend = composer.trim()
+    const usedSuggestion = selectedSuggestion
     setMessages((current) => [...current, optimisticMessage])
     setComposer("")
+    setSelectedSuggestion(null)
 
     try {
       const res = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
@@ -399,6 +405,25 @@ function ManagerChatDashboard({
             : conversation,
         ),
       )
+
+      // AI提案を使用した場合、ログを記録
+      if (usedSuggestion) {
+        const action =
+          messageToSend === usedSuggestion.text ? "USED_AS_IS" : "USED_WITH_EDIT"
+
+        fetch("/api/suggestions/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messageId: data.message.id,
+            suggestionIndex: usedSuggestion.index,
+            suggestionText: usedSuggestion.text,
+            action,
+            editedText: action === "USED_WITH_EDIT" ? messageToSend : undefined,
+            modelUsed: "gemini-2.5-flash",
+          }),
+        }).catch((error) => console.error("Failed to log suggestion usage:", error))
+      }
     } catch (error) {
       console.error(error)
       setSendError("メッセージの送信に失敗しました。")
@@ -422,12 +447,38 @@ function ManagerChatDashboard({
         const next = current.filter((item) => item.toLowerCase() !== tag.label.toLowerCase())
         return { ...previous, [conversationId]: next }
       })
+
+      // Log manual tag removal
+      fetch("/api/tags/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultationCaseId: conversationId,
+          tagLabel: tag.label,
+          action: "REMOVED",
+          tagSource: "manual",
+        }),
+      }).catch((error) => console.error("Failed to log tag change:", error))
+
       return
     }
 
     setRemovedTags((previous) => {
       const current = previous[conversationId] ?? []
       if (current.includes(tag.id)) return previous
+
+      // Log AI-generated tag removal
+      fetch("/api/tags/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultationCaseId: conversationId,
+          tagLabel: tag.label,
+          action: "REMOVED",
+          tagSource: "ai",
+        }),
+      }).catch((error) => console.error("Failed to log tag change:", error))
+
       return { ...previous, [conversationId]: [...current, tag.id] }
     })
   }
@@ -440,6 +491,19 @@ function ManagerChatDashboard({
       if (current.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
         return previous
       }
+
+      // Log manual tag addition
+      fetch("/api/tags/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultationCaseId: conversationId,
+          tagLabel: trimmed,
+          action: "ADDED",
+          tagSource: "manual",
+        }),
+      }).catch((error) => console.error("Failed to log tag change:", error))
+
       return { ...previous, [conversationId]: [...current, trimmed] }
     })
   }
@@ -565,8 +629,9 @@ function ManagerChatDashboard({
           conversation={selectedConversation}
           consultation={consultation}
           suggestions={suggestionItems}
-          onSelectSuggestion={(content) => {
+          onSelectSuggestion={(content, index) => {
             setComposer(content)
+            setSelectedSuggestion({ text: content, index })
             composerRef.current?.focus()
           }}
           onFocusComposer={() => composerRef.current?.focus()}
@@ -1151,7 +1216,7 @@ type ManagerInsightsPanelProps = {
   conversation: (ConversationDetail & { messages: MessageItem[] }) | null
   consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
   suggestions: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
-  onSelectSuggestion: (content: string) => void
+  onSelectSuggestion: (content: string, index: number) => void
   onFocusComposer: () => void
   onRegenerateSuggestions: () => void
   regeneratingSuggestions: boolean
@@ -1231,7 +1296,7 @@ function ManagerInsightsPanel({
                   <button
                     key={`${suggestion.content}-${index}`}
                     type="button"
-                    onClick={() => onSelectSuggestion(suggestion.content)}
+                    onClick={() => onSelectSuggestion(suggestion.content, index)}
                     className="w-full text-left"
                   >
                     <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">

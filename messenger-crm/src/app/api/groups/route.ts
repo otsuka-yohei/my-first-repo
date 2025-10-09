@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 
 import { auth } from "@/auth"
 import { AuthorizationError } from "@/server/auth/permissions"

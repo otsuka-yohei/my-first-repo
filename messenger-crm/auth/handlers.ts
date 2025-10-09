@@ -1,1 +1,4 @@
-export { handlers as GET, handlers as POST } from "./core"
+import { handlers } from "./core"
+
+export const GET = handlers.GET
+export const POST = handlers.POST

@@ -60,6 +60,24 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
   const [isPreferenceSaving, setIsPreferenceSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchMessages, setSearchMessages] = useState(true)
+  const [searchUsers, setSearchUsers] = useState(false)
+  const [searchTags, setSearchTags] = useState(false)
+  const [searchResults, setSearchResults] = useState<{
+    messages: Array<{ id: string; body: string; createdAt: string; conversationId: string }>
+    users: Array<{ id: string; name: string; email: string }>
+    tags: Array<{ consultationCaseId: string; category: string }>
+  } | null>(null)
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchMessage, setSearchMessage] = useState<string | null>(null)
+
+  // Export state
+  const [exportType, setExportType] = useState<string>("conversations")
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState<string | null>(null)
+
   useEffect(() => {
     return () => {
       if (avatarPreview && avatarPreview !== currentUser.avatarUrl) {
@@ -216,6 +234,83 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
     }
   }
 
+  async function handleSearch(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!searchQuery.trim()) {
+      setSearchMessage("検索キーワードを入力してください。")
+      return
+    }
+
+    setIsSearching(true)
+    setSearchMessage(null)
+    setSearchResults(null)
+
+    try {
+      const response = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: searchQuery.trim(),
+          searchMessages,
+          searchUsers,
+          searchTags,
+          limit: 50,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "検索に失敗しました。")
+      }
+
+      const data = await response.json()
+      setSearchResults(data)
+      setSearchMessage(
+        `検索結果: メッセージ ${data.messages.length}件、ユーザー ${data.users.length}件、タグ ${data.tags.length}件`,
+      )
+    } catch (error) {
+      console.error("Failed to search:", error)
+      setSearchMessage(error instanceof Error ? error.message : "検索に失敗しました。")
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  async function handleExport() {
+    setIsExporting(true)
+    setExportMessage(null)
+
+    try {
+      const response = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: exportType }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "エクスポートに失敗しました。")
+      }
+
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `${exportType}_${new Date().toISOString().split("T")[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+
+      setExportMessage("エクスポートが完了しました。")
+    } catch (error) {
+      console.error("Failed to export:", error)
+      setExportMessage(error instanceof Error ? error.message : "エクスポートに失敗しました。")
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   return (
     <div className="flex min-h-full flex-1 flex-col gap-8 bg-muted/20 p-10">
       <header className="flex flex-col gap-2">
@@ -331,6 +426,160 @@ export default function SettingsClient({ currentUser }: SettingsClientProps) {
           <span>{ROLE_DESCRIPTIONS[currentUser.role]}</span>
         </CardContent>
       </Card>
+
+      {(currentUser.role === UserRole.MANAGER ||
+        currentUser.role === UserRole.AREA_MANAGER ||
+        currentUser.role === UserRole.SYSTEM_ADMIN) && (
+        <>
+          <Card className="border-none bg-white shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold">検索</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSearch} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="search-query">検索キーワード</Label>
+                  <Input
+                    id="search-query"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="メッセージ本文、ユーザー名、タグなどを検索"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>検索対象</Label>
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={searchMessages}
+                        onChange={(e) => setSearchMessages(e.target.checked)}
+                      />
+                      <span className="text-sm">メッセージ</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={searchUsers}
+                        onChange={(e) => setSearchUsers(e.target.checked)}
+                      />
+                      <span className="text-sm">ユーザー</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={searchTags}
+                        onChange={(e) => setSearchTags(e.target.checked)}
+                      />
+                      <span className="text-sm">タグ</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={isSearching}>
+                    {isSearching ? "検索中..." : "検索"}
+                  </Button>
+                </div>
+
+                {searchMessage && (
+                  <p
+                    className={`text-xs ${searchMessage.includes("失敗") ? "text-red-500" : "text-muted-foreground"}`}
+                  >
+                    {searchMessage}
+                  </p>
+                )}
+
+                {searchResults && (
+                  <div className="mt-4 space-y-4">
+                    {searchResults.messages.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="font-semibold text-sm">メッセージ</h3>
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {searchResults.messages.map((message) => (
+                            <div key={message.id} className="border rounded p-3 text-sm">
+                              <p className="text-muted-foreground text-xs mb-1">
+                                {new Date(message.createdAt).toLocaleString("ja-JP")}
+                              </p>
+                              <p className="line-clamp-2">{message.body}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {searchResults.users.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="font-semibold text-sm">ユーザー</h3>
+                        <div className="space-y-2">
+                          {searchResults.users.map((user) => (
+                            <div key={user.id} className="border rounded p-3 text-sm">
+                              <p className="font-medium">{user.name}</p>
+                              <p className="text-muted-foreground text-xs">{user.email}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {searchResults.tags.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="font-semibold text-sm">タグ</h3>
+                        <div className="space-y-2">
+                          {searchResults.tags.map((tag, idx) => (
+                            <div key={idx} className="border rounded p-3 text-sm">
+                              <p className="font-medium">{tag.category}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card className="border-none bg-white shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold">データエクスポート</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="export-type">エクスポート種別</Label>
+                <select
+                  id="export-type"
+                  value={exportType}
+                  onChange={(e) => setExportType(e.target.value)}
+                  className="w-full rounded-md border bg-white p-2 text-sm"
+                >
+                  <option value="conversations">会話一覧</option>
+                  <option value="messages">メッセージ詳細</option>
+                  <option value="users">ユーザー一覧</option>
+                  <option value="suggestion_logs">AI提案ログ</option>
+                  <option value="tag_logs">タグ変更ログ</option>
+                  <option value="audit_logs">監査ログ</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end">
+                <Button onClick={handleExport} disabled={isExporting}>
+                  {isExporting ? "エクスポート中..." : "CSVダウンロード"}
+                </Button>
+              </div>
+
+              {exportMessage && (
+                <p
+                  className={`text-xs ${exportMessage.includes("失敗") ? "text-red-500" : "text-muted-foreground"}`}
+                >
+                  {exportMessage}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       <Card className="border-none bg-white shadow-sm">
         <CardHeader>

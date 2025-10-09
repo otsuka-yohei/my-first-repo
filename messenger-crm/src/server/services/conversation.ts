@@ -1,4 +1,4 @@
-import { MessageType, UserRole } from "@prisma/client"
+import { MessageType, UserRole, Prisma } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
@@ -296,7 +296,7 @@ async function enrichMessageInBackground(
       update: {
         translation: enrichment.translation?.translation,
         translationLang: targetLanguage,
-        suggestions: enrichment.suggestions,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
         extra: {
           provider: enrichment.translation?.provider,
           model: enrichment.translation?.model,
@@ -306,7 +306,7 @@ async function enrichMessageInBackground(
         messageId,
         translation: enrichment.translation?.translation,
         translationLang: targetLanguage,
-        suggestions: enrichment.suggestions,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
         extra: {
           provider: enrichment.translation?.provider,
           model: enrichment.translation?.model,
@@ -420,7 +420,7 @@ export async function regenerateMessageSuggestions(params: {
     update: {
       translation: enrichment.translation?.translation,
       translationLang: targetLanguage,
-      suggestions: enrichment.suggestions,
+      suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
       extra: {
         provider: enrichment.translation?.provider,
         model: enrichment.translation?.model,
@@ -430,7 +430,7 @@ export async function regenerateMessageSuggestions(params: {
       messageId: latestWorkerMessage.id,
       translation: enrichment.translation?.translation,
       translationLang: targetLanguage,
-      suggestions: enrichment.suggestions,
+      suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
       extra: {
         provider: enrichment.translation?.provider,
         model: enrichment.translation?.model,

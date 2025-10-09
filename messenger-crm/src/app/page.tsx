@@ -34,21 +34,21 @@ export default async function HomePage() {
     updatedAt: conversation.updatedAt.toISOString(),
     group: conversation.group,
     worker: conversation.worker ?? null,
-    lastMessage: conversation.messages[0]
-      ? {
-          id: conversation.messages[0].id,
-          body: conversation.messages[0].body,
-          language: conversation.messages[0].language,
-          createdAt: conversation.messages[0].createdAt.toISOString(),
-          sender: conversation.messages[0].sender
-            ? {
-                id: conversation.messages[0].sender.id,
-                name: conversation.messages[0].sender.name,
-                role: conversation.messages[0].sender.role,
-              }
-            : null,
-        }
-      : null,
+    lastMessage:
+      conversation.messages[0] && conversation.messages[0].sender
+        ? {
+            id: conversation.messages[0].id,
+            body: conversation.messages[0].body,
+            language: conversation.messages[0].language,
+            createdAt: conversation.messages[0].createdAt.toISOString(),
+            sender: {
+              id: conversation.messages[0].sender.id,
+              name: conversation.messages[0].sender.name ?? null,
+              role: conversation.messages[0].sender.role,
+            },
+            llmArtifact: null,
+          }
+        : null,
     consultation: conversation.consultation
       ? {
           id: conversation.consultation.id,

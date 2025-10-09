@@ -295,7 +295,7 @@ export async function generateSuggestedReplies(
         })
       )
 
-      const successCount = translatedSuggestions.filter(s => s.translation).length
+      const successCount = translatedSuggestions.filter(s => 'translation' in s && s.translation).length
       console.log(`[llm] Translation complete: ${successCount}/${suggestions.length} suggestions translated successfully`)
 
       return translatedSuggestions

@@ -160,6 +160,7 @@ export async function listUsers(user: SessionUser) {
         role: true,
         locale: true,
         avatarUrl: true,
+        isActive: true,
         createdAt: true,
         updatedAt: true,
         memberships: {
@@ -206,6 +207,7 @@ export async function listUsers(user: SessionUser) {
       role: true,
       locale: true,
       avatarUrl: true,
+      isActive: true,
       createdAt: true,
       updatedAt: true,
       memberships: {
@@ -519,4 +521,118 @@ export async function listGroups(user: SessionUser) {
   })
 
   return userMemberships.map((m) => m.group).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * ユーザーを無効化
+ *
+ * @param user - セッションユーザー情報
+ * @param targetUserId - 無効化対象のユーザーID
+ * @returns 更新後のユーザー情報
+ * @throws AuthorizationError - 権限がない場合
+ */
+export async function deactivateUser(user: SessionUser, targetUserId: string) {
+  // 権限チェック: MANAGER以上
+  if (
+    user.role !== UserRole.MANAGER &&
+    user.role !== UserRole.AREA_MANAGER &&
+    user.role !== UserRole.SYSTEM_ADMIN
+  ) {
+    throw new AuthorizationError("ユーザーを無効化する権限がありません。")
+  }
+
+  // 自分自身は無効化できない
+  if (user.id === targetUserId) {
+    throw new Error("自分自身を無効化することはできません。")
+  }
+
+  // 対象ユーザーの取得
+  const targetUser = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, role: true, email: true, isActive: true },
+  })
+
+  if (!targetUser) {
+    throw new Error("ユーザーが見つかりません。")
+  }
+
+  // 既に無効化されている
+  if (!targetUser.isActive) {
+    throw new Error("このユーザーは既に無効化されています。")
+  }
+
+  // SYSTEM_ADMINは他のSYSTEM_ADMINしか無効化できない
+  if (targetUser.role === UserRole.SYSTEM_ADMIN && user.role !== UserRole.SYSTEM_ADMIN) {
+    throw new AuthorizationError("SYSTEM_ADMINユーザーを無効化する権限がありません。")
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: targetUserId },
+    data: { isActive: false },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      locale: true,
+      isActive: true,
+      updatedAt: true,
+    },
+  })
+
+  console.log(`[user] User deactivated: ${targetUser.email} by ${user.id}`)
+
+  return updatedUser
+}
+
+/**
+ * ユーザーを有効化
+ *
+ * @param user - セッションユーザー情報
+ * @param targetUserId - 有効化対象のユーザーID
+ * @returns 更新後のユーザー情報
+ * @throws AuthorizationError - 権限がない場合
+ */
+export async function activateUser(user: SessionUser, targetUserId: string) {
+  // 権限チェック: MANAGER以上
+  if (
+    user.role !== UserRole.MANAGER &&
+    user.role !== UserRole.AREA_MANAGER &&
+    user.role !== UserRole.SYSTEM_ADMIN
+  ) {
+    throw new AuthorizationError("ユーザーを有効化する権限がありません。")
+  }
+
+  // 対象ユーザーの取得
+  const targetUser = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, role: true, email: true, isActive: true },
+  })
+
+  if (!targetUser) {
+    throw new Error("ユーザーが見つかりません。")
+  }
+
+  // 既に有効化されている
+  if (targetUser.isActive) {
+    throw new Error("このユーザーは既に有効化されています。")
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: targetUserId },
+    data: { isActive: true },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      locale: true,
+      isActive: true,
+      updatedAt: true,
+    },
+  })
+
+  console.log(`[user] User activated: ${targetUser.email} by ${user.id}`)
+
+  return updatedUser
 }

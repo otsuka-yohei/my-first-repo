@@ -14,10 +14,10 @@ const credentialsSchema = z.object({
 })
 
 export const authOptions = {
-  adapter: PrismaAdapter(prisma),
+  adapter: PrismaAdapter(prisma) as any,
   secret: env.NEXTAUTH_SECRET,
   session: {
-    strategy: "jwt",
+    strategy: "jwt" as const,
   },
   trustHost: true,
   pages: {
@@ -52,14 +52,14 @@ export const authOptions = {
     }),
   ],
   callbacks: {
-    jwt({ token, user }) {
+    jwt({ token, user }: any) {
       if (user) {
         token.userId = user.id
         token.role = (user.role ?? "WORKER") as UserRole
       }
       return token
     },
-    session({ session, token }) {
+    session({ session, token }: any) {
       if (session.user) {
         session.user.id = token.userId as string
         session.user.role = token.role as UserRole

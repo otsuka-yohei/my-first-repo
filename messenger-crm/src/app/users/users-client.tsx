@@ -16,6 +16,7 @@ interface UserWithGroups {
   name: string
   email: string
   role: UserRole
+  isActive: boolean
   memberships: Array<{
     group: Group
   }>
@@ -195,6 +196,26 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
     }
   }
 
+  async function toggleUserStatus(userId: string, currentStatus: boolean) {
+    try {
+      const response = await fetch(`/api/users/${userId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !currentStatus }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "ステータスの変更に失敗しました。")
+      }
+
+      await loadData()
+    } catch (error) {
+      console.error("Failed to toggle user status:", error)
+      alert(error instanceof Error ? error.message : "ステータスの変更に失敗しました。")
+    }
+  }
+
   function handleGroupSelection(groupId: string, selected: boolean, isCreate: boolean) {
     if (isCreate) {
       setCreateGroupIds((prev) =>
@@ -230,12 +251,13 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
                 <th className="py-3">メール</th>
                 <th className="py-3">ロール</th>
                 <th className="py-3">所属グループ</th>
+                <th className="py-3">ステータス</th>
               </tr>
             </thead>
             <tbody>
               {users.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-6 text-center text-muted-foreground">
+                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
                     ユーザーが見つかりません
                   </td>
                 </tr>
@@ -247,6 +269,16 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
                     <td className="py-3">{ROLE_LABELS[user.role]}</td>
                     <td className="py-3">
                       {user.memberships.map((m) => m.group.name).join(", ") || "なし"}
+                    </td>
+                    <td className="py-3">
+                      <Button
+                        size="sm"
+                        variant={user.isActive ? "default" : "outline"}
+                        onClick={() => toggleUserStatus(user.id, user.isActive)}
+                        disabled={user.id === currentUser.id}
+                      >
+                        {user.isActive ? "有効" : "無効"}
+                      </Button>
                     </td>
                   </tr>
                 ))

@@ -17,11 +17,22 @@ export default async function SettingsPage() {
     redirect("/signin")
   }
 
+  const user = session.user as typeof session.user & { locale?: string; avatarUrl?: string | null }
+
   return (
     <div className="flex h-screen bg-[#f4f7fb]">
       <AppSidebar />
       <main className="flex-1 overflow-y-auto">
-        <SettingsClient currentUser={session.user} />
+        <SettingsClient
+          currentUser={{
+            id: user.id,
+            name: user.name ?? "",
+            email: user.email ?? "",
+            role: user.role,
+            locale: user.locale ?? "ja",
+            avatarUrl: user.avatarUrl ?? null,
+          }}
+        />
       </main>
     </div>
   )

@@ -44,23 +44,38 @@ enum CasePriority {
   LOW
 }
 
+enum SuggestionAction {
+  USED_AS_IS
+  USED_WITH_EDIT
+  NOT_USED
+}
+
+enum TagChangeAction {
+  ADDED
+  REMOVED
+  MODIFIED
+}
+
 model User {
-  id            String            @id @default(cuid())
-  email         String            @unique
-  passwordHash  String
-  name          String
-  role          UserRole
-  locale        String            @default("ja-JP")
-  avatarUrl     String?
-  timeZone      String?           @default("Asia/Tokyo")
-  memberships   GroupMembership[]
-  conversations Conversation[]    @relation("ConversationOwner")
-  messages      Message[]
-  auditLogs     AuditLog[]        @relation("AuditActor")
-  accounts      Account[]
-  sessions      Session[]
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id               String               @id @default(cuid())
+  email            String               @unique
+  passwordHash     String
+  name             String
+  role             UserRole
+  locale           String               @default("ja-JP")
+  avatarUrl        String?
+  timeZone         String?              @default("Asia/Tokyo")
+  isActive         Boolean              @default(true)
+  memberships      GroupMembership[]
+  conversations    Conversation[]       @relation("ConversationOwner")
+  messages         Message[]
+  auditLogs        AuditLog[]           @relation("AuditActor")
+  suggestionUsages SuggestionUsageLog[] @relation("SuggestionUser")
+  tagChanges       TagChangeLog[]       @relation("TagChangeUser")
+  accounts         Account[]
+  sessions         Session[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 }
 
 model Organization {
@@ -114,18 +129,19 @@ model Conversation {
 }
 
 model Message {
-  id             String              @id @default(cuid())
-  conversation   Conversation        @relation(fields: [conversationId], references: [id])
-  conversationId String
-  sender         User                @relation(fields: [senderId], references: [id])
-  senderId       String
-  body           String
-  language       String
-  type           MessageType         @default(TEXT)
-  contentUrl     String?
-  metadata       Json?
-  llmArtifact    MessageLLMArtifact?
-  createdAt      DateTime            @default(now())
+  id               String               @id @default(cuid())
+  conversation     Conversation         @relation(fields: [conversationId], references: [id])
+  conversationId   String
+  sender           User                 @relation(fields: [senderId], references: [id])
+  senderId         String
+  body             String
+  language         String
+  type             MessageType          @default(TEXT)
+  contentUrl       String?
+  metadata         Json?
+  llmArtifact      MessageLLMArtifact?
+  suggestionUsages SuggestionUsageLog[]
+  createdAt        DateTime             @default(now())
 }
 
 model MessageLLMArtifact {
@@ -141,17 +157,18 @@ model MessageLLMArtifact {
 }
 
 model ConsultationCase {
-  id             String       @id @default(cuid())
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
-  conversationId String       @unique
+  id             String         @id @default(cuid())
+  conversation   Conversation   @relation(fields: [conversationId], references: [id])
+  conversationId String         @unique
   summary        String?
   category       String
   description    String?
-  status         CaseStatus   @default(IN_PROGRESS)
-  priority       CasePriority @default(MEDIUM)
+  status         CaseStatus     @default(IN_PROGRESS)
+  priority       CasePriority   @default(MEDIUM)
   closedAt       DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  tagChanges     TagChangeLog[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 }
 
 model ConversationSegment {
@@ -178,6 +195,52 @@ model AuditLog {
   entityId   String
   changes    Json?
   createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model SuggestionUsageLog {
+  id                String           @id @default(cuid())
+  message           Message          @relation(fields: [messageId], references: [id])
+  messageId         String
+  user              User             @relation("SuggestionUser", fields: [userId], references: [id])
+  userId            String
+  suggestionIndex   Int
+  suggestionText    String
+  action            SuggestionAction
+  originalText      String?
+  editedText        String?
+  prompt            String?
+  modelUsed         String?
+  tokensUsed        Int?
+  generationTimeMs  Int?
+  createdAt         DateTime         @default(now())
+
+  @@index([messageId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model TagChangeLog {
+  id             String          @id @default(cuid())
+  consultation   ConsultationCase @relation(fields: [consultationId], references: [id])
+  consultationId String
+  user           User            @relation("TagChangeUser", fields: [userId], references: [id])
+  userId         String
+  action         TagChangeAction
+  tagName        String
+  previousValue  String?
+  newValue       String?
+  isAIGenerated  Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+
+  @@index([consultationId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
 }
 
 model Account {
