@@ -249,6 +249,64 @@ function ManagerChatDashboard({
       setLoadingMessages(true)
       setLoadingError(null)
       try {
+        // placeholder IDの場合は会話を作成
+        if (selectedConversationId.startsWith("placeholder-")) {
+          const workerId = selectedConversationId.replace("placeholder-", "")
+          const worker = workerDirectory[workerId]
+          if (!worker || !worker.groupIds[0]) {
+            throw new Error("Worker not found or has no group")
+          }
+
+          // 会話を作成
+          const createRes = await fetch("/api/conversations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              groupId: worker.groupIds[0],
+              workerId: workerId,
+              subject: `${worker.name}さんとの相談`,
+            }),
+          })
+
+          if (!createRes.ok) {
+            throw new Error("Failed to create conversation")
+          }
+
+          const createData = await readJson<{
+            conversation: ConversationDetail & { messages: MessageItem[] }
+          }>(createRes)
+
+          if (cancelled) return
+
+          const { conversation } = createData
+
+          // 新しい会話IDで選択を更新
+          setSelectedConversationId(conversation.id)
+
+          // 会話リストを更新
+          setConversations((current) =>
+            current.map((item) =>
+              item.id === selectedConversationId
+                ? {
+                    id: conversation.id,
+                    subject: conversation.subject,
+                    status: conversation.status,
+                    updatedAt: conversation.updatedAt.toISOString(),
+                    group: conversation.group,
+                    worker: conversation.worker ?? null,
+                    lastMessage: null,
+                    consultation: null,
+                  }
+                : item,
+            ),
+          )
+
+          setSelectedConversation(conversation)
+          setMessages([])
+          setLoadingMessages(false)
+          return
+        }
+
         const res = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
           method: "GET",
           cache: "no-store",
@@ -301,7 +359,7 @@ function ManagerChatDashboard({
     return () => {
       cancelled = true
     }
-  }, [selectedConversationId])
+  }, [selectedConversationId, workerDirectory])
 
   useEffect(() => {
     setTagDraft("")
@@ -607,11 +665,11 @@ function ManagerChatDashboard({
       <section className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_420px] xl:grid-cols-[320px_minmax(0,1fr)_560px] 2xl:grid-cols-[320px_minmax(0,1fr)_720px]">
         <div className="flex h-full min-h-0 flex-col border-b border-r bg-white md:border-b-0">
           <div className="px-4 pb-4 pt-6">
-            <p className="text-lg font-semibold">相談者一覧</p>
+            <p className="text-lg font-semibold">チャット一覧</p>
             <p className="mt-1 text-xs text-muted-foreground">全ての担当者とすぐにチャットできます。</p>
             <Input
               className="mt-3 bg-slate-100"
-              placeholder="相談者を検索する..."
+              placeholder="チャットを検索する..."
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
             />
@@ -960,7 +1018,7 @@ function WorkerChatDashboard({
               onClick={() => setMobileView("list")}
               aria-pressed={mobileView === "list"}
             >
-              担当者
+              一覧
             </Button>
             <Button
               variant={mobileView === "chat" ? "default" : "outline"}
@@ -988,10 +1046,10 @@ function WorkerChatDashboard({
           } lg:flex-1 lg:overflow-y-auto`}
         >
           <div className="px-4 pb-4 pt-6">
-            <p className="text-lg font-semibold">担当者一覧</p>
+            <p className="text-lg font-semibold">チャット一覧</p>
             <Input
               className="mt-3 bg-slate-100"
-              placeholder="担当者を検索"
+              placeholder="チャットを検索"
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
             />
