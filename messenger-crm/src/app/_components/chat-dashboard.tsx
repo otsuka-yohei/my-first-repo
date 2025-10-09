@@ -1314,9 +1314,9 @@ function ManagerInsightsPanel({
                               <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
                             </div>
                           ) : null}
-                          {suggestion.translation && suggestion.language !== preferredLanguage ? (
-                            <div className="border-t border-slate-200 pt-3 text-slate-500">
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                          {suggestion.translation ? (
+                            <div className="border-t border-slate-200 pt-3 text-slate-600">
+                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                                 {suggestion.translationLang ?? "翻訳"}
                               </p>
                               <p className="whitespace-pre-wrap text-xs leading-relaxed">{suggestion.translation}</p>
