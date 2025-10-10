@@ -701,8 +701,61 @@ export async function regenerateMessageSuggestions(params: {
     orderBy: { createdAt: "desc" },
   })
 
+  // ワーカーメッセージがない場合は、初回メッセージ用の提案を生成
   if (!latestWorkerMessage) {
-    throw new Error("No worker message available for suggestions")
+    const enrichment = await enrichMessageWithLLM({
+      content: "",
+      language: managerLocale,
+      targetLanguage,
+      workerLocale: conversation.worker?.locale ?? undefined,
+      managerLocale,
+      conversationHistory: [],
+      workerInfo: {
+        name: conversation.worker.name,
+        locale: conversation.worker.locale,
+        countryOfOrigin: conversation.worker.countryOfOrigin,
+        dateOfBirth: conversation.worker.dateOfBirth,
+        gender: conversation.worker.gender,
+        address: conversation.worker.address,
+        phoneNumber: conversation.worker.phoneNumber,
+        jobDescription: conversation.worker.jobDescription,
+        hireDate: conversation.worker.hireDate,
+        notes: conversation.worker.notes,
+      },
+      groupInfo: {
+        name: conversation.group.name,
+        phoneNumber: conversation.group.phoneNumber,
+        address: conversation.group.address,
+      },
+      isInitialMessage: true,
+    })
+
+    return {
+      id: `virtual-${conversation.id}`,
+      conversationId: conversation.id,
+      senderId: params.user.id,
+      body: "",
+      language: managerLocale,
+      type: "TEXT" as const,
+      contentUrl: null,
+      metadata: null,
+      createdAt: new Date(),
+      sender: {
+        id: params.user.id,
+        name: params.user.name ?? null,
+        role: params.user.role,
+      },
+      llmArtifact: {
+        id: `virtual-artifact-${conversation.id}`,
+        messageId: `virtual-${conversation.id}`,
+        translation: null,
+        translationLang: null,
+        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.JsonValue,
+        extra: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    }
   }
 
   let enrichment: Awaited<ReturnType<typeof enrichMessageWithLLM>>

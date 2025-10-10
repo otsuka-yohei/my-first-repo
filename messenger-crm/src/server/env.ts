@@ -26,6 +26,7 @@ const envSchema = z.object({
   GOOGLE_TAGGING_API_KEY: optionalString,
   GOOGLE_SEGMENT_API_KEY: optionalString,
   GOOGLE_PLACES_API_KEY: optionalString,
+  GOOGLE_COMPLIANCE_API_KEY: optionalString,
 })
 
 const rawEnv = {
@@ -39,6 +40,7 @@ const rawEnv = {
   GOOGLE_TAGGING_API_KEY: process.env.GOOGLE_TAGGING_API_KEY,
   GOOGLE_SEGMENT_API_KEY: process.env.GOOGLE_SEGMENT_API_KEY,
   GOOGLE_PLACES_API_KEY: process.env.GOOGLE_PLACES_API_KEY,
+  GOOGLE_COMPLIANCE_API_KEY: process.env.GOOGLE_COMPLIANCE_API_KEY,
 }
 
 const parsed = envSchema.safeParse(rawEnv)

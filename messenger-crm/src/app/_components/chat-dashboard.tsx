@@ -10,6 +10,16 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { AppSidebar } from "./app-sidebar"
 import { MedicalFacilitiesList, type MedicalFacility } from "./medical-facility-card"
 import type { CasePriority, CaseStatus } from "@prisma/client"
@@ -237,6 +247,12 @@ function ManagerChatDashboard({
   const [initialSuggestions, setInitialSuggestions] = useState<Record<string, Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>>>({})
   const [workerNotes, setWorkerNotes] = useState("")
   const [savingNotes, setSavingNotes] = useState(false)
+  const [complianceAlert, setComplianceAlert] = useState<{
+    riskLevel: "high" | "medium"
+    reason: string
+  } | null>(null)
+  const [checkingCompliance, setCheckingCompliance] = useState(false)
+  const [bypassCompliance, setBypassCompliance] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workerDirectory = useMemo(() => {
@@ -466,6 +482,50 @@ function ManagerChatDashboard({
     if (!selectedConversationId || !composer.trim()) {
       return
     }
+
+    // マネージャー以上の場合、コンプライアンスチェックを実行（バイパスフラグがない場合のみ）
+    const ENABLE_COMPLIANCE_CHECK = true // コンプライアンスチェックを有効化
+
+    if (ENABLE_COMPLIANCE_CHECK && currentUser.role !== "WORKER" && !bypassCompliance) {
+      setCheckingCompliance(true)
+      try {
+        const checkRes = await fetch("/api/compliance/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: composer.trim() }),
+        })
+
+        if (checkRes.ok) {
+          const checkData = await checkRes.json() as {
+            riskLevel: "none" | "medium" | "high"
+            reason?: string
+          }
+
+          if (checkData.riskLevel === "high" || checkData.riskLevel === "medium") {
+            setComplianceAlert({
+              riskLevel: checkData.riskLevel,
+              reason: checkData.reason ?? "コンプライアンスリスクが検出されました",
+            })
+            setCheckingCompliance(false)
+            return
+          }
+        } else if (checkRes.status === 401) {
+          console.warn("Compliance check: Authentication failed, skipping check")
+          // 認証エラーの場合はチェックをスキップして送信を続行
+        } else {
+          console.error("Compliance check API returned error:", checkRes.status)
+          // その他のAPIエラー時も送信を続行
+        }
+      } catch (error) {
+        console.error("Failed to check compliance", error)
+        // チェックに失敗した場合は続行
+      } finally {
+        setCheckingCompliance(false)
+      }
+    }
+
+    // バイパスフラグをリセット
+    setBypassCompliance(false)
 
     setSending(true)
     setSendError(null)
@@ -787,6 +847,10 @@ function ManagerChatDashboard({
             messagesRef={messagesRef}
             composerRef={composerRef}
             preferredLanguage={preferredLanguage}
+            complianceAlert={complianceAlert}
+            onClearComplianceAlert={() => setComplianceAlert(null)}
+            onBypassCompliance={() => setBypassCompliance(true)}
+            checkingCompliance={checkingCompliance}
           />
         </div>
 
@@ -1246,6 +1310,13 @@ type ChatViewProps = {
     role: UserRole
     name?: string | null
   }
+  complianceAlert?: {
+    riskLevel: "high" | "medium"
+    reason: string
+  } | null
+  onClearComplianceAlert?: () => void
+  onBypassCompliance?: () => void
+  checkingCompliance?: boolean
 }
 
 function ChatView({
@@ -1264,6 +1335,10 @@ function ChatView({
   composerRef,
   preferredLanguage,
   currentUser,
+  complianceAlert,
+  onClearComplianceAlert,
+  onBypassCompliance,
+  checkingCompliance,
 }: ChatViewProps) {
   const internalMessagesRef = useRef<HTMLDivElement | null>(null)
   const mergedRef = messagesRef ?? internalMessagesRef
@@ -1297,6 +1372,57 @@ function ChatView({
               <p className="text-xs text-muted-foreground">{conversation.group.name}</p>
             )}
           </div>
+
+          {/* コンプライアンスアラートダイアログ */}
+          {complianceAlert && onClearComplianceAlert && onBypassCompliance && (
+            <AlertDialog open={true}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="flex items-center gap-2">
+                    {complianceAlert.riskLevel === "high" ? (
+                      <span className="text-red-600">⚠️ 重大なコンプライアンスリスク</span>
+                    ) : (
+                      <span className="text-yellow-600">⚠️ コンプライアンスリスクの可能性</span>
+                    )}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription className="space-y-3">
+                    <p className="text-sm text-slate-700">{complianceAlert.reason}</p>
+                    {complianceAlert.riskLevel === "high" ? (
+                      <p className="text-sm text-red-600 font-medium">
+                        このメッセージの送信は推奨されません。内容を見直してください。
+                      </p>
+                    ) : (
+                      <p className="text-sm text-yellow-600 font-medium">
+                        このメッセージには注意が必要です。送信前に内容を確認してください。
+                      </p>
+                    )}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel onClick={onClearComplianceAlert}>
+                    内容を修正する
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => {
+                      onBypassCompliance()
+                      onClearComplianceAlert()
+                      // フォームを再送信（React合成イベント経由）
+                      setTimeout(() => {
+                        const form = document.querySelector('form') as HTMLFormElement
+                        if (form) {
+                          form.requestSubmit()
+                        }
+                      }, 100)
+                    }}
+                    className={complianceAlert.riskLevel === "high" ? "bg-red-600 hover:bg-red-700" : ""}
+                  >
+                    このまま送信する
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+
           <div ref={mergedRef} className="flex-1 min-h-0 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
             {loadingMessages ? (
               <p className="text-sm text-muted-foreground">読み込み中...</p>
@@ -1415,7 +1541,7 @@ function ChatView({
             )}
           </div>
           <div className="border-t bg-white px-6 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
-            <form onSubmit={onSend} className="space-y-3">
+            <form onSubmit={onSend} className="space-y-3" data-compliance-bypass={!!complianceAlert ? "false" : "true"}>
               <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end">
                 <Textarea
                   placeholder={messagePlaceholder}
@@ -1427,10 +1553,10 @@ function ChatView({
                 />
                 <Button
                   type="submit"
-                  disabled={sending || !composer.trim()}
+                  disabled={sending || checkingCompliance || !composer.trim()}
                   className="w-full shrink-0 sm:w-28"
                 >
-                  {sending ? "送信中..." : "送信"}
+                  {checkingCompliance ? "確認中..." : sending ? "送信中..." : "送信"}
                 </Button>
               </div>
               {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}

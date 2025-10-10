@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 
 import { env } from "@/server/env"
 
-const TRANSLATE_MODEL = "gemini-2.5-flash"
+const TRANSLATE_MODEL = "gemini-2.5-flash-lite"
 const SUGGEST_MODEL = "gemini-2.5-flash"
 const TAGGING_MODEL = "gemini-2.5-flash"
 const SEGMENT_MODEL = "gemini-2.5-flash"
