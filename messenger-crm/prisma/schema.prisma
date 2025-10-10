@@ -8,7 +8,7 @@ datasource db {
 }
 
 enum UserRole {
-  WORKER
+  MEMBER
   MANAGER
   AREA_MANAGER
   SYSTEM_ADMIN

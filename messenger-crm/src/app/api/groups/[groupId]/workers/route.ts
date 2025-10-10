@@ -64,7 +64,7 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
     // グループに所属するワーカーを取得
     const workers = await prisma.user.findMany({
       where: {
-        role: UserRole.WORKER,
+        role: UserRole.MEMBER,
         isActive: true,
         memberships: {
           some: {

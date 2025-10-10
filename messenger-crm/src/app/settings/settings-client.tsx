@@ -25,14 +25,14 @@ const ROLE_LABELS: Record<UserRole, string> = {
   SYSTEM_ADMIN: "システム管理者",
   AREA_MANAGER: "エリアマネージャー",
   MANAGER: "マネージャー",
-  WORKER: "メンバー",
+  MEMBER: "メンバー",
 }
 
 const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   SYSTEM_ADMIN: "システム全体の管理が可能です。",
   AREA_MANAGER: "複数グループの管理が可能です。",
   MANAGER: "所属グループのメンバー管理や相談のエスカレーションが可能です。",
-  WORKER: "自分の相談のみ閲覧・対応できます。",
+  MEMBER: "自分の相談のみ閲覧・対応できます。",
 }
 
 interface CurrentUser {

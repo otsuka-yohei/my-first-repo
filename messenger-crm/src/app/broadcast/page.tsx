@@ -60,7 +60,7 @@ export default async function BroadcastPage() {
 
   return (
     <div className="flex h-screen bg-[#f4f7fb]">
-      <AppSidebar />
+      <AppSidebar userRole={session.user.role} />
       <main className="flex-1 overflow-y-auto">
         <BroadcastClient groups={groups} currentUserId={session.user.id} />
       </main>

@@ -3,7 +3,7 @@ import { MembershipRole, UserRole } from "@prisma/client"
 type RoleRank = Record<UserRole, number>
 
 const ROLE_RANK: RoleRank = {
-  [UserRole.WORKER]: 0,
+  [UserRole.MEMBER]: 0,
   [UserRole.MANAGER]: 1,
   [UserRole.AREA_MANAGER]: 2,
   [UserRole.SYSTEM_ADMIN]: 3,

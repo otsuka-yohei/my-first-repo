@@ -380,25 +380,23 @@ export async function createUser(user: SessionUser, params: CreateUserParams) {
   // ユーザー作成とグループメンバーシップの作成をトランザクションで実行
   const newUser = await prisma.$transaction(async (tx) => {
     // マネージャー以上の場合は任意情報を無視、ワーカーの場合のみ保存
-    const isWorker = params.role === UserRole.WORKER
-    const userData: Record<string, unknown> = {
+    const isWorker = params.role === UserRole.MEMBER
+    const userData = {
       email: trimmedEmail,
       passwordHash,
       name: trimmedName,
       role: params.role,
       locale: params.locale || "ja",
-    }
-
-    // ワーカーの場合のみ任意情報を追加
-    if (isWorker) {
-      if (params.countryOfOrigin) userData.countryOfOrigin = params.countryOfOrigin.trim()
-      if (params.dateOfBirth) userData.dateOfBirth = new Date(params.dateOfBirth)
-      if (params.gender) userData.gender = params.gender.trim()
-      if (params.address) userData.address = params.address.trim()
-      if (params.phoneNumber) userData.phoneNumber = params.phoneNumber.trim()
-      if (params.jobDescription) userData.jobDescription = params.jobDescription.trim()
-      if (params.hireDate) userData.hireDate = new Date(params.hireDate)
-      if (params.notes) userData.notes = params.notes.trim()
+      ...(isWorker && {
+        countryOfOrigin: params.countryOfOrigin ? params.countryOfOrigin.trim() : undefined,
+        dateOfBirth: params.dateOfBirth ? new Date(params.dateOfBirth) : undefined,
+        gender: params.gender ? params.gender.trim() : undefined,
+        address: params.address ? params.address.trim() : undefined,
+        phoneNumber: params.phoneNumber ? params.phoneNumber.trim() : undefined,
+        jobDescription: params.jobDescription ? params.jobDescription.trim() : undefined,
+        hireDate: params.hireDate ? new Date(params.hireDate) : undefined,
+        notes: params.notes ? params.notes.trim() : undefined,
+      }),
     }
 
     const createdUser = await tx.user.create({

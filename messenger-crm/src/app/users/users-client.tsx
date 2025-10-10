@@ -33,7 +33,7 @@ interface UsersClientProps {
 }
 
 const ROLE_LABELS: Record<UserRole, string> = {
-  WORKER: "メンバー",
+  MEMBER: "メンバー",
   MANAGER: "マネージャー",
   AREA_MANAGER: "エリアマネージャー",
   SYSTEM_ADMIN: "システム管理者",
@@ -48,7 +48,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
   const [createName, setCreateName] = useState("")
   const [createEmail, setCreateEmail] = useState("")
   const [createPassword, setCreatePassword] = useState("")
-  const [createRole, setCreateRole] = useState<UserRole>(UserRole.WORKER)
+  const [createRole, setCreateRole] = useState<UserRole>(UserRole.MEMBER)
   const [createGroupIds, setCreateGroupIds] = useState<string[]>([])
   const [createMessage, setCreateMessage] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
@@ -151,7 +151,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
       }
 
       // ワーカーの場合のみ任意フィールドを追加
-      if (createRole === UserRole.WORKER) {
+      if (createRole === UserRole.MEMBER) {
         if (createCountryOfOrigin.trim()) payload.countryOfOrigin = createCountryOfOrigin.trim()
         if (createDateOfBirth) payload.dateOfBirth = createDateOfBirth
         if (createGender.trim()) payload.gender = createGender.trim()
@@ -177,7 +177,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
       setCreateName("")
       setCreateEmail("")
       setCreatePassword("")
-      setCreateRole(UserRole.WORKER)
+      setCreateRole(UserRole.MEMBER)
       setCreateGroupIds(groups.length > 0 ? [groups[0].id] : [])
       setCreateCountryOfOrigin("")
       setCreateDateOfBirth("")
@@ -291,7 +291,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
       "山田太郎",
       "yamada@example.com",
       "password123",
-      "WORKER",
+      "MEMBER",
       groups.length > 0 ? groups[0].id : "group-id-here",
       "ベトナム",
       "1990-01-01",
@@ -331,7 +331,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
         throw new Error("CSVファイルにデータがありません。")
       }
 
-      const headers = lines[0].split(",").map((h) => h.trim())
+      const _headers = lines[0].split(",").map((h) => h.trim())
       const rows = lines.slice(1)
 
       let successCount = 0
@@ -360,7 +360,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
           }
 
           // ワーカーの場合のみ任意フィールドを追加
-          if (role === "WORKER") {
+          if (role === "MEMBER") {
             if (optionalFields[0]) payload.countryOfOrigin = optionalFields[0]
             if (optionalFields[1]) payload.dateOfBirth = optionalFields[1]
             if (optionalFields[2]) payload.gender = optionalFields[2]
@@ -550,7 +550,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
                 className="mt-1 w-full rounded-md border bg-white p-2 text-sm"
                 disabled={isCreating}
               >
-                <option value={UserRole.WORKER}>{ROLE_LABELS[UserRole.WORKER]}</option>
+                <option value={UserRole.MEMBER}>{ROLE_LABELS[UserRole.MEMBER]}</option>
                 <option value={UserRole.MANAGER}>{ROLE_LABELS[UserRole.MANAGER]}</option>
                 <option value={UserRole.AREA_MANAGER}>{ROLE_LABELS[UserRole.AREA_MANAGER]}</option>
                 {currentUser.role === UserRole.SYSTEM_ADMIN && (
@@ -580,7 +580,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
               </div>
             </div>
 
-            {createRole === UserRole.WORKER && (
+            {createRole === UserRole.MEMBER && (
               <>
                 <div className="border-t pt-3">
                   <p className="text-sm font-medium text-muted-foreground mb-3">任意情報（メンバーのみ）</p>

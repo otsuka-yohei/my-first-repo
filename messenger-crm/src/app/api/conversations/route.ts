@@ -3,7 +3,11 @@ import { MessageType } from "@prisma/client"
 import { z } from "zod"
 
 import { auth } from "@/auth"
-import { createConversation, listConversationsForUser } from "@/server/services/conversation"
+import {
+  createConversation,
+  listConversationsForUser,
+  listAvailableGroupsForWorker
+} from "@/server/services/conversation"
 
 const postSchema = z.object({
   workerId: z.string().min(1),
@@ -30,7 +34,12 @@ export async function GET() {
     role: session.user.role,
   })
 
-  return NextResponse.json({ conversations })
+  const availableGroups = await listAvailableGroupsForWorker({
+    id: session.user.id,
+    role: session.user.role,
+  })
+
+  return NextResponse.json({ conversations, availableGroups })
 }
 
 export async function POST(req: NextRequest) {

@@ -14,7 +14,7 @@ export async function ensureConversationAccess(
   user: SessionUser,
   conversation: { groupId: string; workerId: string },
 ) {
-  if (user.role === UserRole.WORKER) {
+  if (user.role === UserRole.MEMBER) {
     if (conversation.workerId !== user.id) {
       throw new AuthorizationError("自分以外の相談は閲覧できません。")
     }
@@ -58,7 +58,7 @@ export async function listConversationsForUser(user: SessionUser) {
     },
   } as const
 
-  if (user.role === UserRole.WORKER) {
+  if (user.role === UserRole.MEMBER) {
     return prisma.conversation.findMany({
       where: { workerId: user.id },
       orderBy: { updatedAt: "desc" },
@@ -89,6 +89,33 @@ export async function listConversationsForUser(user: SessionUser) {
     orderBy: { updatedAt: "desc" },
     include: baseInclude,
   })
+}
+
+export async function listAvailableGroupsForWorker(user: SessionUser) {
+  if (user.role !== UserRole.MEMBER) {
+    return []
+  }
+
+  const memberships = await prisma.groupMembership.findMany({
+    where: { userId: user.id },
+    include: {
+      group: {
+        select: {
+          id: true,
+          name: true,
+          isDeleted: true,
+        },
+      },
+    },
+  })
+
+  // 削除されていないグループのみを返す
+  return memberships
+    .filter((membership) => !membership.group.isDeleted)
+    .map((membership) => ({
+      id: membership.group.id,
+      name: membership.group.name,
+    }))
 }
 
 export async function getConversationWithMessages(params: {
@@ -136,7 +163,7 @@ export async function createConversation(params: {
     select: { id: true, role: true },
   })
 
-  if (!worker || worker.role !== UserRole.WORKER) {
+  if (!worker || worker.role !== UserRole.MEMBER) {
     throw new Error("Worker not found")
   }
 
@@ -162,7 +189,7 @@ export async function createConversation(params: {
     throw new AuthorizationError("Worker is not a member of the selected group")
   }
 
-  if (params.user.role === UserRole.WORKER) {
+  if (params.user.role === UserRole.MEMBER) {
     if (params.user.id !== params.workerId) {
       throw new AuthorizationError("自分以外の相談は作成できません。")
     }
@@ -212,7 +239,7 @@ export async function createConversation(params: {
 }
 
 export async function appendMessage(params: {
-  user: SessionUser
+  user: SessionUser & { locale?: string }
   conversationId: string
   body: string
   language: string
@@ -266,10 +293,10 @@ export async function appendMessage(params: {
 
   // LLM処理をバックグラウンドで実行（レスポンスを待たない）
   const targetLanguage =
-    params.user.role === UserRole.WORKER ? "ja" : conversation.worker.locale ?? "vi"
+    params.user.role === UserRole.MEMBER ? "ja" : conversation.worker.locale ?? "vi"
   // ワーカーがメッセージを送信した場合、マネージャーの言語はデフォルト（日本語）
   // マネージャーがメッセージを送信した場合、マネージャーのlocaleを使用
-  const managerLocale = params.user.role === UserRole.WORKER
+  const managerLocale = params.user.role === UserRole.MEMBER
     ? "ja"
     : (params.user as SessionUser & { locale?: string }).locale
 
@@ -400,12 +427,12 @@ async function enrichMessageInBackground(
     const sortedMessages = [...conversation.messages].reverse()
 
     // 最後のワーカーメッセージからの経過時間を計算
-    const lastWorkerMessage = sortedMessages.findLast((msg) => msg.sender.role === UserRole.WORKER)
+    const lastWorkerMessage = sortedMessages.findLast((msg) => msg.sender.role === UserRole.MEMBER)
     let daysSinceLastWorkerMessage = 0
     if (lastWorkerMessage) {
       const timeDiff = Date.now() - new Date(lastWorkerMessage.createdAt).getTime()
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
-    } else if (senderRole !== UserRole.WORKER) {
+    } else if (senderRole !== UserRole.MEMBER) {
       // ワーカーからのメッセージがない場合は、会話開始からの経過時間
       const timeDiff = Date.now() - new Date(conversation.createdAt).getTime()
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
@@ -591,7 +618,7 @@ async function regenerateConversationSegmentsInBackground(conversationId: string
 }
 
 export async function regenerateMessageSuggestions(params: {
-  user: SessionUser & { locale?: string }
+  user: SessionUser & { locale?: string; name?: string | null }
   conversationId: string
 }) {
   const conversation = await prisma.conversation.findUnique({
@@ -696,7 +723,7 @@ export async function regenerateMessageSuggestions(params: {
   const latestWorkerMessage = await prisma.message.findFirst({
     where: {
       conversationId: params.conversationId,
-      sender: { role: UserRole.WORKER },
+      sender: { role: UserRole.MEMBER },
     },
     orderBy: { createdAt: "desc" },
   })

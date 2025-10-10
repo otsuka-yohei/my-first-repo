@@ -51,7 +51,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, user }) {
       if (user) {
         token.userId = user.id
-        token.role = (user.role ?? "WORKER") as UserRole
+        token.role = (user.role ?? "MEMBER") as UserRole
         token.locale = (user as any).locale ?? "ja-JP"
       }
       return token

@@ -34,8 +34,8 @@ export async function search(user: SessionUser, params: SearchParams) {
   // アクセス可能なグループIDを取得
   let allowedGroupIds: string[] = []
   if (user.role !== UserRole.SYSTEM_ADMIN && user.role !== UserRole.AREA_MANAGER) {
-    if (user.role === UserRole.WORKER) {
-      // WORKERは自分の会話のみ
+    if (user.role === UserRole.MEMBER) {
+      // MEMBERは自分の会話のみ
       const messages = await prisma.message.findMany({
         where: {
           body: {

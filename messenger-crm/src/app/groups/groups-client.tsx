@@ -117,7 +117,7 @@ export default function GroupsClient() {
         throw new Error("組織の取得に失敗しました")
       }
 
-      const activeData = await activeRes.json()
+      const _activeData = await activeRes.json()
       const deletedData = await deletedRes.json()
       const orgsData = await orgsRes.json()
 
@@ -521,7 +521,7 @@ export default function GroupsClient() {
               <Label htmlFor="org">組織</Label>
               <Select
                 value={formData.organizationId}
-                onValueChange={(value) => setFormData({ ...formData, organizationId: value })}
+                onValueChange={(value: string) => setFormData({ ...formData, organizationId: value })}
               >
                 <SelectTrigger id="org">
                   <SelectValue placeholder="組織を選択" />
@@ -686,7 +686,7 @@ export default function GroupsClient() {
               <Label htmlFor="target-group">移行先グループ</Label>
               <Select
                 value={migrateData.toGroupId}
-                onValueChange={(value) => setMigrateData({ ...migrateData, toGroupId: value })}
+                onValueChange={(value: string) => setMigrateData({ ...migrateData, toGroupId: value })}
               >
                 <SelectTrigger id="target-group">
                   <SelectValue placeholder="グループを選択" />

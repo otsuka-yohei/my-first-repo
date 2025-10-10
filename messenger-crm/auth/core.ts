@@ -55,7 +55,7 @@ export const authOptions = {
     jwt({ token, user }: any) {
       if (user) {
         token.userId = user.id
-        token.role = (user.role ?? "WORKER") as UserRole
+        token.role = (user.role ?? "MEMBER") as UserRole
       }
       return token
     },

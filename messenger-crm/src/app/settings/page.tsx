@@ -44,7 +44,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="flex h-screen bg-[#f4f7fb]">
-      <AppSidebar />
+      <AppSidebar userRole={user.role} />
       <main className="flex-1 overflow-y-auto">
         <SettingsClient
           currentUser={{

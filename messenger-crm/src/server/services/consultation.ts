@@ -52,7 +52,7 @@ export async function upsertConsultationCase(params: {
   conversationId: string
   data: z.infer<typeof consultationUpdateSchema>
 }) {
-  if (params.user.role === UserRole.WORKER) {
+  if (params.user.role === UserRole.MEMBER) {
     throw new AuthorizationError("相談の更新権限がありません。")
   }
 

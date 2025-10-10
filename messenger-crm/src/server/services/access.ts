@@ -32,7 +32,7 @@ export async function listGroupsForUser(user: SessionUser) {
 }
 
 export async function listWorkersForConversationCreation(user: SessionUser) {
-  if (user.role === UserRole.WORKER) {
+  if (user.role === UserRole.MEMBER) {
     const memberships = await prisma.groupMembership.findMany({
       where: { userId: user.id },
       select: { groupId: true },
@@ -100,7 +100,7 @@ export async function listWorkersForConversationCreation(user: SessionUser) {
   const workerMemberships = await prisma.groupMembership.findMany({
     where: {
       ...(groupIds ? { groupId: { in: groupIds } } : {}),
-      user: { role: UserRole.WORKER },
+      user: { role: UserRole.MEMBER },
     },
     include: {
       user: { select: { id: true, name: true, email: true } },

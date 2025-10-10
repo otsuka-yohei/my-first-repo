@@ -7,7 +7,7 @@ import { logoutAction } from "@/app/actions/logout"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
-type UserRole = "WORKER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
+type UserRole = "MEMBER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
 
 type AppHeaderProps = {
   currentUser: {
@@ -19,7 +19,7 @@ type AppHeaderProps = {
 }
 
 const ROLE_LABEL: Record<UserRole, string> = {
-  WORKER: "ユーザー",
+  MEMBER: "ユーザー",
   MANAGER: "一般管理者",
   AREA_MANAGER: "エリアマネージャー",
   SYSTEM_ADMIN: "システム管理者",

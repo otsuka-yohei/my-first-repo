@@ -37,7 +37,7 @@ interface BroadcastClientProps {
 
 export default function BroadcastClient({
   groups,
-  currentUserId,
+  currentUserId: _currentUserId,
 }: BroadcastClientProps) {
   const [selectedGroupId, setSelectedGroupId] = useState<string>("")
   const [workers, setWorkers] = useState<Worker[]>([])

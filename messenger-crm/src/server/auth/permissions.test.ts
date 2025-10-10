@@ -10,7 +10,7 @@ describe("ensureRole", () => {
   })
 
   it("throws when role is not allowed", () => {
-    expect(() => ensureRole(UserRole.WORKER, [UserRole.MANAGER])).toThrow(AuthorizationError)
+    expect(() => ensureRole(UserRole.MEMBER, [UserRole.MANAGER])).toThrow(AuthorizationError)
   })
 })
 
@@ -20,7 +20,7 @@ describe("roleAtLeast", () => {
   })
 
   it("throws when role is below tier", () => {
-    expect(() => roleAtLeast(UserRole.WORKER, UserRole.MANAGER)).toThrow(AuthorizationError)
+    expect(() => roleAtLeast(UserRole.MEMBER, UserRole.MANAGER)).toThrow(AuthorizationError)
   })
 })
 
@@ -43,7 +43,7 @@ describe("canAccessGroup", () => {
   })
 
   it("allows worker only when member", () => {
-    expect(canAccessGroup(UserRole.WORKER, memberships, "group-1")).toBe(true)
-    expect(canAccessGroup(UserRole.WORKER, memberships, "group-3")).toBe(false)
+    expect(canAccessGroup(UserRole.MEMBER, memberships, "group-1")).toBe(true)
+    expect(canAccessGroup(UserRole.MEMBER, memberships, "group-3")).toBe(false)
   })
 })

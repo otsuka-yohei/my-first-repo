@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation"
+import { UserRole } from "@prisma/client"
 
 import { auth } from "@/auth"
 import { ChatDashboard } from "@/app/_components/chat-dashboard"
 import { listGroupsForUser, listWorkersForConversationCreation } from "@/server/services/access"
-import { listConversationsForUser } from "@/server/services/conversation"
+import { listConversationsForUser, listAvailableGroupsForWorker } from "@/server/services/conversation"
 
 export default async function HomePage() {
   const session = await auth()
@@ -12,7 +13,7 @@ export default async function HomePage() {
     redirect("/login")
   }
 
-  const [conversations, groups, workers] = await Promise.all([
+  const [conversations, groups, workers, workerGroups] = await Promise.all([
     listConversationsForUser({
       id: session.user.id,
       role: session.user.role,
@@ -22,6 +23,10 @@ export default async function HomePage() {
       role: session.user.role,
     }),
     listWorkersForConversationCreation({
+      id: session.user.id,
+      role: session.user.role,
+    }),
+    listAvailableGroupsForWorker({
       id: session.user.id,
       role: session.user.role,
     }),
@@ -50,7 +55,9 @@ export default async function HomePage() {
                 id: existingConv.messages[0].id,
                 body: existingConv.messages[0].body,
                 language: existingConv.messages[0].language,
+                type: existingConv.messages[0].type,
                 createdAt: existingConv.messages[0].createdAt.toISOString(),
+                metadata: null,
                 sender: {
                   id: existingConv.messages[0].sender.id,
                   name: existingConv.messages[0].sender.name ?? null,
@@ -88,7 +95,11 @@ export default async function HomePage() {
     }
   })
 
-  const availableGroups = groups.map((group) => ({ id: group.id, name: group.name }))
+  // MEMBERの場合は workerGroups を使用、それ以外は groups を使用
+  const availableGroups = session.user.role === UserRole.MEMBER
+    ? workerGroups
+    : groups.map((group) => ({ id: group.id, name: group.name }))
+
   const availableWorkers = workers.map((worker) => ({
     id: worker.id,
     name: worker.name,

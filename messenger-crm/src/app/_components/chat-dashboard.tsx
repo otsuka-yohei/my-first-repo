@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Bot, ExternalLink, MessageSquare, Settings, X } from "lucide-react"
 
@@ -24,7 +24,7 @@ import { AppSidebar } from "./app-sidebar"
 import { MedicalFacilitiesList, type MedicalFacility } from "./medical-facility-card"
 import type { CasePriority, CaseStatus } from "@prisma/client"
 
-type UserRole = "WORKER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
+type UserRole = "MEMBER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
 
 type MessageItem = {
   id: string
@@ -104,6 +104,7 @@ type ConversationDetail = {
   id: string
   subject: string | null
   status: string
+  updatedAt?: string
   group: { id: string; name: string }
   worker: { id: string; name: string | null; locale: string | null; notes?: string | null }
   consultation: (ConsultationCase & { description?: string | null }) | null
@@ -200,7 +201,7 @@ const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
 
 export function ChatDashboard(props: ChatDashboardProps) {
   const preferredLanguage = usePreferredLanguage()
-  if (props.currentUser.role === "WORKER") {
+  if (props.currentUser.role === "MEMBER") {
     return <WorkerChatDashboard {...props} preferredLanguage={preferredLanguage} />
   }
 
@@ -242,8 +243,8 @@ function ManagerChatDashboard({
   const [regeneratingSuggestions, setRegeneratingSuggestions] = useState(false)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
   const [segments, setSegments] = useState<ConversationSegment[]>([])
-  const [loadingSegments, setLoadingSegments] = useState(false)
-  const [generatingSegments, setGeneratingSegments] = useState(false)
+  const [_loadingSegments, setLoadingSegments] = useState(false)
+  const [_generatingSegments, setGeneratingSegments] = useState(false)
   const [initialSuggestions, setInitialSuggestions] = useState<Record<string, Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>>>({})
   const [workerNotes, setWorkerNotes] = useState("")
   const [savingNotes, setSavingNotes] = useState(false)
@@ -395,6 +396,7 @@ function ManagerChatDashboard({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConversationId, workerDirectory])
 
   useEffect(() => {
@@ -469,13 +471,12 @@ function ManagerChatDashboard({
 
   const consultation = selectedConversation?.consultation ?? null
 
-  const removedForSelected = selectedConversationId ? removedTags[selectedConversationId] ?? [] : []
-  const customForSelected = selectedConversationId ? customTags[selectedConversationId] ?? [] : []
-
   const selectedConversationTags = useMemo(() => {
     if (!selectedConversation) return []
+    const removedForSelected = selectedConversationId ? removedTags[selectedConversationId] ?? [] : []
+    const customForSelected = selectedConversationId ? customTags[selectedConversationId] ?? [] : []
     return buildConversationTags(selectedConversation, removedForSelected, customForSelected)
-  }, [selectedConversation, removedForSelected, customForSelected])
+  }, [selectedConversation, selectedConversationId, removedTags, customTags])
 
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -486,7 +487,7 @@ function ManagerChatDashboard({
     // マネージャー以上の場合、コンプライアンスチェックを実行（バイパスフラグがない場合のみ）
     const ENABLE_COMPLIANCE_CHECK = true // コンプライアンスチェックを有効化
 
-    if (ENABLE_COMPLIANCE_CHECK && currentUser.role !== "WORKER" && !bypassCompliance) {
+    if (ENABLE_COMPLIANCE_CHECK && currentUser.role !== "MEMBER" && !bypassCompliance) {
       setCheckingCompliance(true)
       try {
         const checkRes = await fetch("/api/compliance/check", {
@@ -536,7 +537,7 @@ function ManagerChatDashboard({
       conversationId: selectedConversationId,
       senderId: currentUser.id,
       body: composer.trim(),
-      language: currentUser.role === "WORKER" ? "vi" : "ja",
+      language: currentUser.role === "MEMBER" ? "vi" : "ja",
       type: "TEXT" as const,
       contentUrl: null,
       metadata: null,
@@ -563,7 +564,7 @@ function ManagerChatDashboard({
         },
         body: JSON.stringify({
           body: messageToSend,
-          language: currentUser.role === "WORKER" ? "vi" : "ja",
+          language: currentUser.role === "MEMBER" ? "vi" : "ja",
         }),
       })
 
@@ -692,7 +693,7 @@ function ManagerChatDashboard({
     })
   }
 
-  async function handleRegenerateSuggestions() {
+  const handleRegenerateSuggestions = useCallback(async () => {
     if (!selectedConversationId) return
     setRegeneratingSuggestions(true)
     setRegenerateError(null)
@@ -728,9 +729,9 @@ function ManagerChatDashboard({
     } finally {
       setRegeneratingSuggestions(false)
     }
-  }
+  }, [selectedConversationId, messages])
 
-  async function handleGenerateSegments() {
+  async function _handleGenerateSegments() {
     if (!selectedConversationId) return
     setGeneratingSegments(true)
     try {
@@ -786,7 +787,7 @@ function ManagerChatDashboard({
       className="flex min-h-0 flex-1 overflow-y-auto bg-[#f4f7fb] lg:h-[100dvh] lg:overflow-hidden"
       style={{ minHeight: "100dvh" }}
     >
-      <AppSidebar />
+      <AppSidebar userRole={currentUser.role} />
 
       <section className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)_420px] xl:grid-cols-[320px_minmax(0,1fr)_560px] 2xl:grid-cols-[320px_minmax(0,1fr)_720px]">
         <div className="flex h-full min-h-0 flex-col border-b border-r bg-white md:border-b-0">
@@ -902,22 +903,44 @@ function ManagerChatDashboard({
 
 function WorkerChatDashboard({
   initialConversations,
-  availableWorkers,
+  availableGroups,
+  availableWorkers: _availableWorkers,
   currentUser,
   preferredLanguage,
 }: DashboardViewProps) {
   const router = useRouter()
 
   // グループごとに会話を整理
+  // 既存の会話とメンバーグループの両方を含める
   const groupConversations = useMemo(() => {
     const grouped = new Map<string, ConversationSummary>()
+
+    // 既存の会話を追加
     for (const conv of initialConversations) {
       if (!grouped.has(conv.group.id)) {
         grouped.set(conv.group.id, conv)
       }
     }
+
+    // メンバーグループで会話がまだないものを追加
+    for (const group of availableGroups) {
+      if (!grouped.has(group.id)) {
+        // 仮のConversationSummaryを作成
+        grouped.set(group.id, {
+          id: `placeholder-${group.id}`,
+          subject: null,
+          status: "ACTIVE",
+          updatedAt: new Date().toISOString(),
+          group: { id: group.id, name: group.name },
+          worker: { id: currentUser.id, name: currentUser.name ?? null },
+          lastMessage: null,
+          consultation: null,
+        })
+      }
+    }
+
     return Array.from(grouped.values())
-  }, [initialConversations])
+  }, [initialConversations, availableGroups, currentUser.id, currentUser.name])
 
   const [conversations, setConversations] = useState(initialConversations)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
@@ -1041,7 +1064,7 @@ function WorkerChatDashboard({
     return messages.filter(
       (message) =>
         message.sender.id === currentUser.id ||
-        message.sender.role !== "WORKER"
+        message.sender.role !== "MEMBER"
     )
   }, [messages, currentUser.id])
 
@@ -1435,11 +1458,11 @@ function ChatView({
               </div>
             ) : (
               messages.map((message) => {
-                const isWorker = message.sender.role === "WORKER"
+                const isWorker = message.sender.role === "MEMBER"
                 const isSystemMessage = message.type === "SYSTEM"
                 const translation = message.llmArtifact?.translation?.trim()
                 const medicalFacilities = message.metadata?.facilities || message.llmArtifact?.extra?.medicalFacilities
-                const healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
+                const _healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
                 const urls = extractUrls(message.body)
 
                 // システムメッセージの場合
@@ -1589,7 +1612,7 @@ async function readJson<T>(res: Response): Promise<T> {
 
   try {
     return JSON.parse(text) as T
-  } catch (error) {
+  } catch (_error) {
     throw new Error("レスポンスの解析に失敗しました")
   }
 }
@@ -1633,7 +1656,7 @@ function ManagerInsightsPanel({
   onNewTagChange,
   contact,
   segments,
-  preferredLanguage,
+  preferredLanguage: _preferredLanguage,
   workerNotes,
   onNotesChange,
   onSaveNotes,
@@ -2157,7 +2180,7 @@ function UrlPreviewCard({ url, isWorker }: { url: string; isWorker: boolean }) {
 
         setPreview({ domain })
         setLoading(false)
-      } catch (err) {
+      } catch (_err) {
         if (!cancelled) {
           setError(true)
           setLoading(false)

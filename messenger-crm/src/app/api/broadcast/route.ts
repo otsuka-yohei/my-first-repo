@@ -4,7 +4,6 @@ import { UserRole } from "@prisma/client"
 
 import { auth } from "@/auth"
 import { prisma } from "@/server/db"
-import { AuthorizationError } from "@/server/auth/permissions"
 import { translateMessage } from "@/server/llm/service"
 
 const broadcastSchema = z.object({
@@ -80,7 +79,7 @@ export async function POST(req: NextRequest) {
     const recipients = await prisma.user.findMany({
       where: {
         id: { in: recipientIds },
-        role: UserRole.WORKER,
+        role: UserRole.MEMBER,
         isActive: true,
         memberships: {
           some: {
@@ -155,7 +154,7 @@ export async function POST(req: NextRequest) {
 
         // 翻訳がある場合はLLMArtifactを作成
         if (translation) {
-          await prisma.lLMArtifact.create({
+          await prisma.messageLLMArtifact.create({
             data: {
               messageId: createdMessage.id,
               translation,
@@ -191,7 +190,7 @@ export async function POST(req: NextRequest) {
       sent: successful.length,
       failed: failed.length,
       total: recipients.length,
-      results: successful.map((r) => (r as PromiseFulfilledResult<any>).value),
+      results: successful.map((r) => (r as PromiseFulfilledResult<{ conversationId: string; messageId: string }>).value),
     })
   } catch (error) {
     console.error("Failed to broadcast message:", error)

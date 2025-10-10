@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   }
 
   // マネージャー以上の権限を持つユーザーのみチェック対象
-  if (session.user.role === "WORKER") {
+  if (session.user.role === "MEMBER") {
     return NextResponse.json(
       { riskLevel: "none" } as ComplianceCheckResponse,
       { status: 200 }

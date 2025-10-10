@@ -275,14 +275,14 @@ export async function generateSuggestedReplies(
     const transcript = recentMessages
       .map((msg) => {
         const time = new Date(msg.createdAt).toLocaleString("ja-JP")
-        const role = msg.senderRole === "WORKER" ? "メンバー" : "マネージャー"
+        const role = msg.senderRole === "MEMBER" ? "メンバー" : "マネージャー"
         return `[${time}] ${role}: ${msg.body}`
       })
       .join("\n")
 
     // マネージャー連投かどうかを判定
     const lastMessages = request.conversationHistory.slice(-3)
-    const consecutiveManagerMessages = lastMessages.filter(msg => msg.senderRole !== "WORKER").length
+    const consecutiveManagerMessages = lastMessages.filter(msg => msg.senderRole !== "MEMBER").length
     const isManagerConsecutive = consecutiveManagerMessages >= 2
 
     // ワーカーからの最後のメッセージからの経過日数
@@ -300,7 +300,7 @@ export async function generateSuggestedReplies(
       tones = ["welcome", "welcome", "welcome"]
     } else {
       // 健康相談の検出
-      const recentWorkerMessages = recentMessages.filter(msg => msg.senderRole === "WORKER").slice(-3)
+      const recentWorkerMessages = recentMessages.filter(msg => msg.senderRole === "MEMBER").slice(-3)
       const lastWorkerMessage = recentWorkerMessages[recentWorkerMessages.length - 1]
       const isHealthRelated = lastWorkerMessage?.body && (
         /体調|痛|怪我|ケガ|病気|熱|風邪|頭痛|腹痛|咳|吐き気|めまい|病院|医者|診察/.test(lastWorkerMessage.body)
@@ -600,7 +600,7 @@ export async function enrichMessageWithLLM(params: {
           sourceLanguage: params.language,
           targetLanguage: params.targetLanguage,
         })
-      : Promise.resolve(null as TranslationResult | null),
+      : Promise.resolve(undefined as TranslationResult | undefined),
     // 初回メッセージの場合は、会話履歴なしで生成
     params.isInitialMessage && params.workerInfo
       ? generateSuggestedReplies({
@@ -662,7 +662,7 @@ export async function generateConversationTags(
   const transcript = messages
     .map((msg) => {
       const time = new Date(msg.createdAt).toLocaleString("ja-JP")
-      const role = msg.senderRole === "WORKER" ? "相談者" : "担当者"
+      const role = msg.senderRole === "MEMBER" ? "相談者" : "担当者"
       return `[${time}] ${role}: ${msg.body}`
     })
     .join("\n\n")
@@ -772,7 +772,7 @@ export async function analyzeHealthConsultation(params: {
 
   const transcript = params.conversationHistory
     .map((msg) => {
-      const role = msg.senderRole === "WORKER" ? "メンバー" : "マネージャー"
+      const role = msg.senderRole === "MEMBER" ? "メンバー" : "マネージャー"
       return `${role}: ${msg.body}`
     })
     .join("\n")
@@ -827,7 +827,7 @@ export async function segmentConversation(
   const transcript = request.messages
     .map((msg, index) => {
       const time = new Date(msg.createdAt).toLocaleString("ja-JP")
-      const role = msg.senderRole === "WORKER" ? "相談者" : "担当者"
+      const role = msg.senderRole === "MEMBER" ? "相談者" : "担当者"
       return `[メッセージ ${index}] [${time}] ${role}: ${msg.body}`
     })
     .join("\n\n")

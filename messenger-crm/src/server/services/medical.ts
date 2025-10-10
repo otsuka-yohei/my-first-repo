@@ -29,6 +29,26 @@ export interface SearchMedicalFacilitiesParams {
   radius?: number // メートル単位 (デフォルト: 5000m = 5km)
 }
 
+interface GooglePlaceResult {
+  name: string
+  vicinity?: string
+  formatted_address?: string
+  place_id: string
+  geometry: {
+    location: {
+      lat: number
+      lng: number
+    }
+  }
+  rating?: number
+  user_ratings_total?: number
+  types?: string[]
+  opening_hours?: {
+    open_now?: boolean
+    weekday_text?: string[]
+  }
+}
+
 /**
  * Google Places APIを使用して医療機関を検索
  */
@@ -90,7 +110,7 @@ export async function searchMedicalFacilities(
     }
 
     // Step 4: 結果を整形
-    const facilities: MedicalFacility[] = placesData.results.map((place: any) => {
+    const facilities: MedicalFacility[] = placesData.results.map((place: GooglePlaceResult) => {
       const facility: MedicalFacility = {
         name: place.name,
         address: place.vicinity || place.formatted_address || "",
