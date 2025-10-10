@@ -265,7 +265,7 @@ function ManagerChatDashboard({
       setLoadingError(null)
       try {
         // placeholder IDの場合は会話を作成
-        if (selectedConversationId.startsWith("placeholder-")) {
+        if (selectedConversationId && selectedConversationId.startsWith("placeholder-")) {
           const workerId = selectedConversationId.replace("placeholder-", "")
           const worker = workerDirectory[workerId]
           if (!worker || !worker.groupIds[0]) {
@@ -843,14 +843,21 @@ function WorkerChatDashboard({
   preferredLanguage,
 }: DashboardViewProps) {
   const router = useRouter()
-  const managerOptions = useMemo(
-    () => availableWorkers.filter((worker) => worker.id !== currentUser.id),
-    [availableWorkers, currentUser.id],
-  )
+
+  // グループごとに会話を整理
+  const groupConversations = useMemo(() => {
+    const grouped = new Map<string, ConversationSummary>()
+    for (const conv of initialConversations) {
+      if (!grouped.has(conv.group.id)) {
+        grouped.set(conv.group.id, conv)
+      }
+    }
+    return Array.from(grouped.values())
+  }, [initialConversations])
 
   const [conversations, setConversations] = useState(initialConversations)
-  const [selectedManagerId, setSelectedManagerId] = useState<string | null>(null)
-  const [selectedManager, setSelectedManager] = useState<WorkerOption | null>(null)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const [selectedGroup, setSelectedGroup] = useState<{ id: string; name: string } | null>(null)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [conversationDetail, setConversationDetail] = useState<ConversationDetail | null>(null)
   const [messages, setMessages] = useState<MessageItem[]>([])
@@ -868,19 +875,19 @@ function WorkerChatDashboard({
   }, [initialConversations])
 
   useEffect(() => {
-    if (managerOptions.length === 0) {
-      setSelectedManagerId(null)
+    if (groupConversations.length === 0) {
+      setSelectedGroupId(null)
       setSelectedConversationId(null)
       setConversationDetail(null)
       setMessages([])
       return
     }
 
-    if (!selectedManagerId) {
-      void handleSelectManager(managerOptions[0])
+    if (!selectedGroupId) {
+      void handleSelectGroup(groupConversations[0].group)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [managerOptions])
+  }, [groupConversations])
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -956,33 +963,28 @@ function WorkerChatDashboard({
     }
   }, [messages, selectedConversationId])
 
-  const filteredManagers = useMemo(() => {
+  const filteredGroups = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
-    if (!term) return managerOptions
-    return managerOptions.filter((manager) => {
-      const target = [manager.name ?? "", manager.email ?? ""].join(" ").toLowerCase()
+    if (!term) return groupConversations
+    return groupConversations.filter((conv) => {
+      const target = conv.group.name.toLowerCase()
       return target.includes(term)
     })
-  }, [managerOptions, searchTerm])
+  }, [groupConversations, searchTerm])
 
+  // すべてのマネージャーのメッセージを表示（特定のマネージャーでフィルタしない）
   const displayMessages = useMemo(() => {
-    if (!selectedManagerId) return []
     return messages.filter(
       (message) =>
         message.sender.id === currentUser.id ||
-        (message.sender.id === selectedManagerId && message.sender.role !== "WORKER"),
+        message.sender.role !== "WORKER"
     )
-  }, [messages, selectedManagerId, currentUser.id])
+  }, [messages, currentUser.id])
 
-  async function ensureConversation(manager: WorkerOption) {
-    const existing = conversations.find((conversation) => manager.groupIds.includes(conversation.group.id))
+  async function ensureConversation(group: { id: string; name: string }) {
+    const existing = conversations.find((conversation) => conversation.group.id === group.id)
     if (existing) {
       return existing
-    }
-
-    const groupId = manager.groupIds[0]
-    if (!groupId) {
-      return null
     }
 
     try {
@@ -992,9 +994,9 @@ function WorkerChatDashboard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          groupId,
+          groupId: group.id,
           workerId: currentUser.id,
-          subject: manager.name ? `${manager.name}さんとの相談` : "相談",
+          subject: `${group.name}との相談`,
         }),
       })
 
@@ -1016,12 +1018,12 @@ function WorkerChatDashboard({
     }
   }
 
-  async function handleSelectManager(manager: WorkerOption) {
-    setSelectedManager(manager)
-    setSelectedManagerId(manager.id)
+  async function handleSelectGroup(group: { id: string; name: string }) {
+    setSelectedGroup(group)
+    setSelectedGroupId(group.id)
     setError(null)
 
-    const summary = await ensureConversation(manager)
+    const summary = await ensureConversation(group)
     if (!summary) {
       setSelectedConversationId(null)
       return
@@ -1125,32 +1127,32 @@ function WorkerChatDashboard({
             />
           </div>
           <div className="space-y-2 px-3 pb-6">
-            {filteredManagers.length === 0 ? (
-              <p className="px-2 text-sm text-muted-foreground">表示できる担当者がいません。</p>
+            {filteredGroups.length === 0 ? (
+              <p className="px-2 text-sm text-muted-foreground">表示できるグループがありません。</p>
             ) : (
-              filteredManagers.map((manager) => {
-                const isActive = manager.id === selectedManagerId
-                const preview = getLastMessagePreview(conversations, manager)
-                const time = getLastMessageTime(conversations, manager)
+              filteredGroups.map((conv) => {
+                const isActive = conv.group.id === selectedGroupId
+                const preview = conv.lastMessage?.body ?? "メッセージなし"
+                const time = formatRelativeTime(conv.updatedAt)
                 return (
                   <button
-                    key={manager.id}
+                    key={conv.group.id}
                     type="button"
-                    onClick={() => void handleSelectManager(manager)}
+                    onClick={() => void handleSelectGroup(conv.group)}
                     className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition ${
                       isActive ? "border-[#0F2C82] shadow-md" : "border-transparent hover:border-slate-200"
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <Avatar className="h-10 w-10">
-                        <AvatarFallback>{getInitials(manager.name ?? manager.email)}</AvatarFallback>
+                        <AvatarFallback>{getInitials(conv.group.name)}</AvatarFallback>
                       </Avatar>
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold">{manager.name ?? manager.email ?? "担当者"}</p>
+                          <p className="text-sm font-semibold">{conv.group.name}</p>
                           <span className="text-xs text-muted-foreground">{time}</span>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{preview}</p>
+                        <p className="mt-1 text-xs text-muted-foreground line-clamp-1">{preview}</p>
                       </div>
                     </div>
                   </button>
@@ -1178,16 +1180,16 @@ function WorkerChatDashboard({
           </Button>
         </div>
 
-        {selectedManager && selectedConversationId ? (
+        {selectedGroup && selectedConversationId ? (
           <ChatView
             conversation={
-              conversationDetail && selectedManager
+              conversationDetail && selectedGroup
                 ? {
                     ...conversationDetail,
                     messages,
                     worker: {
-                      id: selectedManager.id,
-                      name: selectedManager.name,
+                      id: currentUser.id,
+                      name: selectedGroup.name,
                       locale: null,
                     },
                   }
@@ -1205,12 +1207,13 @@ function WorkerChatDashboard({
             consultation={conversationDetail?.consultation ?? null}
             messagesRef={messagesRef}
             preferredLanguage={preferredLanguage}
+            currentUser={currentUser}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center bg-slate-50">
             <div className="text-center text-muted-foreground">
               <MessageSquare className="mx-auto mb-3 h-10 w-10" />
-              <p className="text-sm">担当者を選択してチャットを開始してください。</p>
+              <p className="text-sm">グループを選択してチャットを開始してください。</p>
             </div>
           </div>
         )}
@@ -1238,6 +1241,11 @@ type ChatViewProps = {
   messagesRef?: React.RefObject<HTMLDivElement | null>
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
   preferredLanguage: string
+  currentUser?: {
+    id: string
+    role: UserRole
+    name?: string | null
+  }
 }
 
 function ChatView({
@@ -1255,6 +1263,7 @@ function ChatView({
   messagesRef,
   composerRef,
   preferredLanguage,
+  currentUser,
 }: ChatViewProps) {
   const internalMessagesRef = useRef<HTMLDivElement | null>(null)
   const mergedRef = messagesRef ?? internalMessagesRef
@@ -1340,8 +1349,17 @@ function ChatView({
                 }
 
                 // 通常のメッセージ
+                const isOwnMessage = currentUser && message.sender.id === currentUser.id
+                const showSenderName = !isOwnMessage && !isWorker
+
                 return (
                   <div key={message.id}>
+                    {/* LINE風の送信者名表示（相手のメッセージで、かつマネージャーの場合） */}
+                    {showSenderName && (
+                      <p className="mb-1 ml-1 text-xs text-slate-500">
+                        {message.sender.name ?? "担当者"}
+                      </p>
+                    )}
                     <div className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
                       <div
                         className={`max-w-[75%] min-w-0 rounded-2xl px-4 py-3 shadow-sm ${
@@ -1990,17 +2008,6 @@ function formatRelativeTime(isoString: string) {
   return target.toLocaleDateString("ja-JP", { month: "long", day: "numeric" })
 }
 
-function getLastMessagePreview(conversations: ConversationSummary[], manager: WorkerOption) {
-  const summary = conversations.find((conversation) => manager.groupIds.includes(conversation.group.id))
-  if (!summary?.lastMessage) return "メッセージなし"
-  return summary.lastMessage.body.slice(0, 40)
-}
-
-function getLastMessageTime(conversations: ConversationSummary[], manager: WorkerOption) {
-  const summary = conversations.find((conversation) => manager.groupIds.includes(conversation.group.id))
-  if (!summary) return "--"
-  return formatRelativeTime(summary.updatedAt)
-}
 
 // URLプレビューカードコンポーネント
 function UrlPreviewCard({ url, isWorker }: { url: string; isWorker: boolean }) {
