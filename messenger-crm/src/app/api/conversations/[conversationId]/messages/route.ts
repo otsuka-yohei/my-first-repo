@@ -35,8 +35,34 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ conversation })
   } catch (error) {
-    console.error("Failed to load conversation", error)
-    return NextResponse.json({ error: "Not found" }, { status: 404 })
+    console.error("Failed to load conversation:", {
+      conversationId,
+      userId: session.user.id,
+      userRole: session.user.role,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    })
+
+    // エラーの種類に応じて適切なステータスコードとメッセージを返す
+    if (error instanceof Error) {
+      if (error.message === "Conversation not found") {
+        return NextResponse.json(
+          { error: "会話が見つかりませんでした" },
+          { status: 404 }
+        )
+      }
+      if (error.message.includes("権限がありません") || error.message.includes("閲覧できません")) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: 403 }
+        )
+      }
+    }
+
+    return NextResponse.json(
+      { error: "会話の読み込みに失敗しました" },
+      { status: 500 }
+    )
   }
 }
 

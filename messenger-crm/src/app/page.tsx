@@ -33,67 +33,102 @@ export default async function HomePage() {
   ])
 
   // マネージャーの場合、会話がないワーカーも含める
-  const conversationMap = new Map(
-    conversations.map((conv) => [conv.worker?.id, conv])
-  )
-
-  const initialConversations = workers.map((worker) => {
-    const existingConv = conversationMap.get(worker.id)
-
-    if (existingConv) {
-      // 既存の会話がある場合
-      return {
-        id: existingConv.id,
-        subject: existingConv.subject,
-        status: existingConv.status,
-        updatedAt: existingConv.updatedAt.toISOString(),
-        group: existingConv.group,
-        worker: existingConv.worker ?? null,
+  // メンバーの場合は、実際の会話のみを使用（プレースホルダーはフロントエンドで作成）
+  const initialConversations = session.user.role === UserRole.MEMBER
+    ? conversations.map((conv) => ({
+        id: conv.id,
+        subject: conv.subject,
+        status: conv.status,
+        updatedAt: conv.updatedAt.toISOString(),
+        group: conv.group,
+        worker: conv.worker ?? null,
         lastMessage:
-          existingConv.messages[0] && existingConv.messages[0].sender
+          conv.messages[0] && conv.messages[0].sender
             ? {
-                id: existingConv.messages[0].id,
-                body: existingConv.messages[0].body,
-                language: existingConv.messages[0].language,
-                type: existingConv.messages[0].type,
-                createdAt: existingConv.messages[0].createdAt.toISOString(),
+                id: conv.messages[0].id,
+                body: conv.messages[0].body,
+                language: conv.messages[0].language,
+                type: conv.messages[0].type,
+                createdAt: conv.messages[0].createdAt.toISOString(),
                 metadata: null,
                 sender: {
-                  id: existingConv.messages[0].sender.id,
-                  name: existingConv.messages[0].sender.name ?? null,
-                  role: existingConv.messages[0].sender.role,
+                  id: conv.messages[0].sender.id,
+                  name: conv.messages[0].sender.name ?? null,
+                  role: conv.messages[0].sender.role,
                 },
                 llmArtifact: null,
               }
             : null,
-        consultation: existingConv.consultation
+        consultation: conv.consultation
           ? {
-              id: existingConv.consultation.id,
-              category: existingConv.consultation.category,
-              status: existingConv.consultation.status,
-              priority: existingConv.consultation.priority,
-              summary: existingConv.consultation.summary ?? null,
+              id: conv.consultation.id,
+              category: conv.consultation.category,
+              status: conv.consultation.status,
+              priority: conv.consultation.priority,
+              summary: conv.consultation.summary ?? null,
             }
           : null,
-      }
-    } else {
-      // 会話がないワーカーの場合、仮のエントリを作成
-      const workerGroup = groups.find(g => worker.groupIds.includes(g.id))
-      return {
-        id: `placeholder-${worker.id}`,
-        subject: null,
-        status: "ACTIVE" as const,
-        updatedAt: new Date().toISOString(),
-        group: workerGroup ? { id: workerGroup.id, name: workerGroup.name } : { id: "", name: "" },
-        worker: {
-          id: worker.id,
-          name: worker.name,
-        },
-        lastMessage: null,
-        consultation: null,
-      }
-    }
-  })
+      }))
+    : workers.map((worker) => {
+        const conversationMap = new Map(
+          conversations.map((conv) => [conv.worker?.id, conv])
+        )
+        const existingConv = conversationMap.get(worker.id)
+
+        if (existingConv) {
+          // 既存の会話がある場合
+          return {
+            id: existingConv.id,
+            subject: existingConv.subject,
+            status: existingConv.status,
+            updatedAt: existingConv.updatedAt.toISOString(),
+            group: existingConv.group,
+            worker: existingConv.worker ?? null,
+            lastMessage:
+              existingConv.messages[0] && existingConv.messages[0].sender
+                ? {
+                    id: existingConv.messages[0].id,
+                    body: existingConv.messages[0].body,
+                    language: existingConv.messages[0].language,
+                    type: existingConv.messages[0].type,
+                    createdAt: existingConv.messages[0].createdAt.toISOString(),
+                    metadata: null,
+                    sender: {
+                      id: existingConv.messages[0].sender.id,
+                      name: existingConv.messages[0].sender.name ?? null,
+                      role: existingConv.messages[0].sender.role,
+                    },
+                    llmArtifact: null,
+                  }
+                : null,
+            consultation: existingConv.consultation
+              ? {
+                  id: existingConv.consultation.id,
+                  category: existingConv.consultation.category,
+                  status: existingConv.consultation.status,
+                  priority: existingConv.consultation.priority,
+                  summary: existingConv.consultation.summary ?? null,
+                }
+              : null,
+          }
+        } else {
+          // 会話がないワーカーの場合、仮のエントリを作成
+          const workerGroup = groups.find(g => worker.groupIds.includes(g.id))
+          return {
+            id: `placeholder-${worker.id}`,
+            subject: null,
+            status: "ACTIVE" as const,
+            updatedAt: new Date().toISOString(),
+            group: workerGroup ? { id: workerGroup.id, name: workerGroup.name } : { id: "", name: "" },
+            worker: {
+              id: worker.id,
+              name: worker.name,
+            },
+            lastMessage: null,
+            consultation: null,
+          }
+        }
+      })
 
   // MEMBERの場合は workerGroups を使用、それ以外は groups を使用
   const availableGroups = session.user.role === UserRole.MEMBER

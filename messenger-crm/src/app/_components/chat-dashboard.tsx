@@ -983,6 +983,15 @@ function WorkerChatDashboard({
       return
     }
 
+    // プレースホルダーIDの場合は会話を読み込まない
+    if (selectedConversationId.startsWith("placeholder-")) {
+      setConversationDetail(null)
+      setMessages([])
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     let cancelled = false
 
     async function loadConversation() {
@@ -993,9 +1002,30 @@ function WorkerChatDashboard({
           method: "GET",
           cache: "no-store",
         })
+
         if (!res.ok) {
-          throw new Error("Failed to load conversation")
+          // レスポンスボディからエラーメッセージを取得
+          const errorData = await res.json().catch(() => ({ error: "不明なエラー" }))
+          console.error("Failed to load conversation:", {
+            status: res.status,
+            statusText: res.statusText,
+            conversationId: selectedConversationId,
+            error: errorData,
+          })
+
+          // ステータスコードに応じたエラーメッセージ
+          let errorMessage = "メッセージを読み込めませんでした。"
+          if (res.status === 403) {
+            errorMessage = errorData.error || "この会話を閲覧する権限がありません。"
+          } else if (res.status === 404) {
+            errorMessage = errorData.error || "会話が見つかりませんでした。"
+          } else if (errorData.error) {
+            errorMessage = errorData.error
+          }
+
+          throw new Error(errorMessage)
         }
+
         const data = await readJson<{
           conversation: ConversationDetail & { messages: MessageItem[] }
         }>(res)
@@ -1024,9 +1054,10 @@ function WorkerChatDashboard({
           ),
         )
       } catch (err) {
-        console.error(err)
+        console.error("loadConversation error:", err)
         if (!cancelled) {
-          setError("メッセージを読み込めませんでした。")
+          const errorMessage = err instanceof Error ? err.message : "メッセージを読み込めませんでした。"
+          setError(errorMessage)
           setMessages([])
         }
       } finally {
@@ -1110,14 +1141,17 @@ function WorkerChatDashboard({
     setSelectedGroupId(group.id)
     setError(null)
 
-    const summary = await ensureConversation(group)
-    if (!summary) {
-      setSelectedConversationId(null)
-      return
-    }
+    // groupConversationsから該当する会話を探す（プレースホルダーを含む）
+    const conversation = groupConversations.find((conv) => conv.group.id === group.id)
 
-    setSelectedConversationId(summary.id)
-    setMobileView("chat")
+    if (conversation) {
+      setSelectedConversationId(conversation.id)
+      setMobileView("chat")
+    } else {
+      // 見つからない場合はプレースホルダーIDを生成
+      setSelectedConversationId(`placeholder-${group.id}`)
+      setMobileView("chat")
+    }
   }
 
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
@@ -1126,10 +1160,22 @@ function WorkerChatDashboard({
       return
     }
 
+    // プレースホルダーIDの場合は会話を作成してから送信
+    let conversationId = selectedConversationId
+    if (selectedConversationId.startsWith("placeholder-") && selectedGroup) {
+      const summary = await ensureConversation(selectedGroup)
+      if (!summary) {
+        setSendError("会話の作成に失敗しました。")
+        return
+      }
+      conversationId = summary.id
+      setSelectedConversationId(summary.id)
+    }
+
     setSending(true)
     setSendError(null)
     try {
-      const res = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
+      const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1149,7 +1195,7 @@ function WorkerChatDashboard({
       setComposer("")
       setConversations((current) =>
         current.map((conversation) =>
-          conversation.id === selectedConversationId
+          conversation.id === conversationId
             ? {
                 ...conversation,
                 lastMessage: data.message,
@@ -1267,7 +1313,7 @@ function WorkerChatDashboard({
           </Button>
         </div>
 
-        {selectedGroup && selectedConversationId ? (
+        {selectedGroup ? (
           <ChatView
             conversation={
               conversationDetail && selectedGroup
