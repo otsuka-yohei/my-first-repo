@@ -438,6 +438,10 @@ async function enrichMessageInBackground(
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
     }
 
+    // フェーズ1: 翻訳を優先実行してすぐにDB更新
+    console.log(`[background] Phase 1: Priority translation for message ${messageId}`)
+    const translationStartTime = Date.now()
+
     const enrichment = await enrichMessageWithLLM({
       content,
       language,
@@ -469,7 +473,37 @@ async function enrichMessageInBackground(
       daysSinceLastWorkerMessage,
     })
 
-    // 健康相談の分析
+    const translationDuration = Date.now() - translationStartTime
+    console.log(`[background] Phase 1 completed: Translation in ${translationDuration}ms`)
+
+    // 翻訳結果を即座にDB更新（ユーザーにすぐ表示される）
+    if (enrichment.translation) {
+      await prisma.messageLLMArtifact.upsert({
+        where: { messageId },
+        update: {
+          translation: enrichment.translation.translation,
+          translationLang: targetLanguage,
+          extra: {
+            provider: enrichment.translation.provider,
+            model: enrichment.translation.model,
+          } as Prisma.InputJsonValue,
+        },
+        create: {
+          messageId,
+          translation: enrichment.translation.translation,
+          translationLang: targetLanguage,
+          suggestions: [] as unknown as Prisma.InputJsonValue,
+          extra: {
+            provider: enrichment.translation.provider,
+            model: enrichment.translation.model,
+          } as Prisma.InputJsonValue,
+        },
+      })
+      console.log(`[background] Translation saved to DB for immediate display`)
+    }
+
+    // フェーズ2: 健康相談の分析（並列処理なし、翻訳後に実行）
+    console.log(`[background] Phase 2: Health consultation analysis for message ${messageId}`)
     let medicalFacilities: MedicalFacility[] | undefined
     const healthAnalysis = await analyzeHealthConsultation({
       conversationHistory: sortedMessages.map((msg) => ({
@@ -530,6 +564,8 @@ async function enrichMessageInBackground(
       })
     }
 
+    // フェーズ3: 提案と健康分析の結果を最終更新
+    console.log(`[background] Phase 3: Final update with suggestions and health analysis`)
     const extraData: Record<string, unknown> = {
       provider: enrichment.translation?.provider,
       model: enrichment.translation?.model,
@@ -546,8 +582,6 @@ async function enrichMessageInBackground(
     await prisma.messageLLMArtifact.upsert({
       where: { messageId },
       update: {
-        translation: enrichment.translation?.translation,
-        translationLang: targetLanguage,
         suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
         extra: extraData as Prisma.InputJsonValue,
       },
@@ -562,6 +596,7 @@ async function enrichMessageInBackground(
 
     const duration = Date.now() - startTime
     console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
+    console.log(`[background] Breakdown - Translation: ${translationDuration}ms, Total: ${duration}ms`)
   } catch (error) {
     console.error(`[background] Failed to enrich message ${messageId}:`, error)
   }

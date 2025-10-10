@@ -848,6 +848,7 @@ function ManagerChatDashboard({
             messagesRef={messagesRef}
             composerRef={composerRef}
             preferredLanguage={preferredLanguage}
+            currentUser={currentUser}
             complianceAlert={complianceAlert}
             onClearComplianceAlert={() => setComplianceAlert(null)}
             onBypassCompliance={() => setBypassCompliance(true)}
@@ -1504,7 +1505,6 @@ function ChatView({
               </div>
             ) : (
               messages.map((message) => {
-                const isWorker = message.sender.role === "MEMBER"
                 const isSystemMessage = message.type === "SYSTEM"
                 const translation = message.llmArtifact?.translation?.trim()
                 const medicalFacilities = message.metadata?.facilities || message.llmArtifact?.extra?.medicalFacilities
@@ -1544,27 +1544,37 @@ function ChatView({
                 }
 
                 // 通常のメッセージ
+                // 自分のメッセージかどうかを判定（ログインしているユーザーのID）
                 const isOwnMessage = currentUser && message.sender.id === currentUser.id
-                const showSenderName = !isOwnMessage && !isWorker
+                // 自分のメッセージでない場合に送信者名を表示
+                const showSenderName = !isOwnMessage
 
                 return (
                   <div key={message.id}>
-                    {/* LINE風の送信者名表示（相手のメッセージで、かつマネージャーの場合） */}
+                    {/* LINE風の送信者名表示（相手のメッセージの場合） */}
                     {showSenderName && (
-                      <p className="mb-1 ml-1 text-xs text-slate-500">
+                      <p className="mb-1 ml-12 text-xs text-slate-500">
                         {message.sender.name ?? "担当者"}
                       </p>
                     )}
-                    <div className={`flex ${isWorker ? "justify-start" : "justify-end"}`}>
+                    <div className={`flex gap-2 ${isOwnMessage ? "justify-end" : "justify-start"}`}>
+                      {/* 相手のメッセージの場合のみアイコンを表示 */}
+                      {!isOwnMessage && (
+                        <Avatar className="h-8 w-8 shrink-0 border border-slate-300">
+                          <AvatarFallback className="bg-white text-slate-700 text-xs font-semibold">
+                            {getInitials(message.sender.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                      )}
                       <div
                         className={`max-w-[75%] min-w-0 rounded-2xl px-4 py-3 shadow-sm ${
-                          isWorker ? "bg-white" : "bg-[#0F2C82] text-white"
+                          isOwnMessage ? "bg-[#0F2C82] text-white" : "bg-white"
                         }`}
                       >
                         <div className="space-y-3">
                           <p
                             className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
-                              isWorker ? "text-slate-800" : "text-white"
+                              isOwnMessage ? "text-white" : "text-slate-800"
                             }`}
                           >
                             {linkifyText(message.body)}
@@ -1572,19 +1582,19 @@ function ChatView({
                           {translation ? (
                             <div
                               className={`border-t pt-3 text-sm leading-relaxed ${
-                                isWorker
-                                  ? "border-slate-300 text-slate-600"
-                                  : "border-white/40 text-white/80"
+                                isOwnMessage
+                                  ? "border-white/40 text-white/80"
+                                  : "border-slate-300 text-slate-600"
                               }`}
                             >
                               <p className="whitespace-pre-wrap break-words">{linkifyText(translation)}</p>
                             </div>
                           ) : null}
                           {urls.map((url, index) => (
-                            <UrlPreviewCard key={`${message.id}-url-${index}`} url={url} isWorker={isWorker} />
+                            <UrlPreviewCard key={`${message.id}-url-${index}`} url={url} isWorker={!isOwnMessage} />
                           ))}
                         </div>
-                        <p className={`mt-3 text-[10px] ${isWorker ? "text-slate-400" : "text-white/70"}`}>
+                        <p className={`mt-3 text-[10px] ${isOwnMessage ? "text-white/70" : "text-slate-400"}`}>
                           {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
                             hour: "2-digit",
                             minute: "2-digit",
@@ -1596,7 +1606,9 @@ function ChatView({
                     {/* 医療機関カードの表示 */}
                     {medicalFacilities && medicalFacilities.length > 0 && (
                       <div className="mt-3 flex justify-start">
-                        <div className="max-w-[75%]">
+                        {/* アイコンの幅を確保 */}
+                        {!isOwnMessage && <div className="w-8 shrink-0" />}
+                        <div className="max-w-[75%] ml-2">
                           <MedicalFacilitiesList
                             facilities={medicalFacilities}
                             title="近隣の医療機関"

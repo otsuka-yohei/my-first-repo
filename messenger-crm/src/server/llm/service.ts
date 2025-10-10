@@ -156,13 +156,17 @@ export async function translateMessage(
   }
 
   const prompt =
-    `You are a professional translator specializing in customer support communications.\n\n` +
+    `You are a translator specializing in internal workplace communications between managers and part-time employees.\n\n` +
     `Translate the following message from ${request.sourceLanguage} to ${request.targetLanguage}.\n\n` +
     `IMPORTANT Guidelines:\n` +
-    `- Maintain a polite and professional tone appropriate for customer support\n` +
-    `- Preserve the original meaning and intent\n` +
-    `- Use natural, conversational language that native speakers would use\n` +
-    `- Return ONLY the translated text, without any additional explanation or formatting\n\n` +
+    `- Match the tone of the original message - it can be casual, friendly, or formal depending on the context\n` +
+    `- This is internal workplace communication, NOT customer support, so professional formality is not required\n` +
+    `- Preserve the original meaning, intent, and emotional tone\n` +
+    `- Use natural, conversational language that native speakers would use in workplace chat\n` +
+    `- Return ONLY the translated text, without any additional explanation or formatting\n` +
+    `- If the message is too short, unclear, or contains only random characters, translate it literally without any explanation\n` +
+    `- NEVER return messages asking for clarification or explaining that translation is not possible\n` +
+    `- If you cannot translate meaningfully, return the original text exactly as provided\n\n` +
     `Message:\n${request.content}`
 
   const output = await safeGenerateText(translateModel, prompt, `translate-${request.sourceLanguage}-to-${request.targetLanguage}`)
@@ -175,6 +179,30 @@ export async function translateMessage(
       provider: translateModel ? "google-ai-studio" : "mock",
       model: translateModel ? TRANSLATE_MODEL : "offline",
       warnings: [`${reason}; returning original content.`],
+    }
+  }
+
+  // バリデーション: LLMが説明文を返したかチェック
+  const lowerOutput = output.toLowerCase()
+  const isExplanation =
+    lowerOutput.includes('please provide') ||
+    lowerOutput.includes('vui lòng cung cấp') ||
+    lowerOutput.includes('xin vui lòng') ||
+    lowerOutput.includes('提供') ||
+    lowerOutput.includes('ください') ||
+    lowerOutput.includes('cannot translate') ||
+    lowerOutput.includes('unable to translate') ||
+    lowerOutput.includes('không thể dịch') ||
+    // 出力が入力の3倍以上長い場合も説明文の可能性が高い
+    output.length > request.content.length * 3
+
+  if (isExplanation) {
+    console.log(`[llm] translate: Detected explanation response, returning original content`)
+    return {
+      translation: request.content,
+      provider: "google-ai-studio",
+      model: TRANSLATE_MODEL,
+      warnings: ["Translation uncertain; returning original text"],
     }
   }
 
