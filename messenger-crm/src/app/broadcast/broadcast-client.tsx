@@ -107,7 +107,7 @@ export default function BroadcastClient({
     try {
       const response = await fetch(`/api/groups/${groupId}/workers`)
       if (!response.ok) {
-        throw new Error("ワーカー一覧の取得に失敗しました")
+        throw new Error("メンバー一覧の取得に失敗しました")
       }
       const data = await response.json()
       setWorkers(data.workers)
@@ -116,7 +116,7 @@ export default function BroadcastClient({
     } catch (error) {
       console.error("Failed to load workers:", error)
       setStatusMessage(
-        error instanceof Error ? error.message : "ワーカーの取得に失敗しました"
+        error instanceof Error ? error.message : "メンバーの取得に失敗しました"
       )
       setIsSuccess(false)
     } finally {
@@ -195,7 +195,7 @@ export default function BroadcastClient({
       <header className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">一斉送信</h1>
         <p className="text-sm text-muted-foreground">
-          グループに所属するワーカーに対して、メッセージを一斉送信します
+          グループに所属するメンバーに対して、メッセージを一斉送信します
         </p>
       </header>
 
@@ -385,7 +385,7 @@ export default function BroadcastClient({
           {selectedGroupId && isLoadingWorkers && (
             <Card className="border-none bg-white shadow-sm">
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                ワーカー情報を読み込み中...
+                メンバー情報を読み込み中...
               </CardContent>
             </Card>
           )}

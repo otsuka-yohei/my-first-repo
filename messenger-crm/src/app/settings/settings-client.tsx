@@ -25,7 +25,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
   SYSTEM_ADMIN: "システム管理者",
   AREA_MANAGER: "エリアマネージャー",
   MANAGER: "マネージャー",
-  WORKER: "ワーカー",
+  WORKER: "メンバー",
 }
 
 const ROLE_DESCRIPTIONS: Record<UserRole, string> = {

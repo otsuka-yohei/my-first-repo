@@ -275,7 +275,7 @@ export async function generateSuggestedReplies(
     const transcript = recentMessages
       .map((msg) => {
         const time = new Date(msg.createdAt).toLocaleString("ja-JP")
-        const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
+        const role = msg.senderRole === "WORKER" ? "メンバー" : "マネージャー"
         return `[${time}] ${role}: ${msg.body}`
       })
       .join("\n")
@@ -329,9 +329,9 @@ export async function generateSuggestedReplies(
       }
     }
 
-    // ワーカー情報セクション
+    // メンバー情報セクション
     const workerInfoSection = workerDetails.length > 0
-      ? `\n\n### ワーカー情報:\n${workerDetails.join("\n")}`
+      ? `\n\n### メンバー情報:\n${workerDetails.join("\n")}`
       : ""
 
     // グループ情報セクション
@@ -348,9 +348,9 @@ export async function generateSuggestedReplies(
       `${tones[1]}: [メッセージ内容2]\n` +
       `${tones[2]}: [メッセージ内容3]\n\n` +
       `番号付けやマークダウン形式は使用しないでください。\n` +
-      `上記のワーカー情報とグループ情報を考慮して、個別化された適切なメッセージを提案してください。\n\n` +
+      `上記のメンバー情報とグループ情報を考慮して、個別化された適切なメッセージを提案してください。\n\n` +
       `会話履歴:\n${transcript}\n\n` +
-      `前回のワーカーからのメッセージからの経過日数: ${Math.round(daysSince)} 日`
+      `前回のメンバーからのメッセージからの経過日数: ${Math.round(daysSince)} 日`
 
     operationName = `enhanced-suggestions-${request.language}`
   } else {
@@ -772,7 +772,7 @@ export async function analyzeHealthConsultation(params: {
 
   const transcript = params.conversationHistory
     .map((msg) => {
-      const role = msg.senderRole === "WORKER" ? "ワーカー" : "マネージャー"
+      const role = msg.senderRole === "WORKER" ? "メンバー" : "マネージャー"
       return `${role}: ${msg.body}`
     })
     .join("\n")
@@ -780,7 +780,7 @@ export async function analyzeHealthConsultation(params: {
   const prompt =
     `以下の会話を分析して、健康相談（体調不良、怪我、病気など）に関連しているかを判定してください。\n\n` +
     `会話履歴:\n${transcript}\n\n` +
-    `ワーカーの住所: ${params.workerInfo.address || "未登録"}\n\n` +
+    `メンバーの住所: ${params.workerInfo.address || "未登録"}\n\n` +
     `以下のJSON形式で回答してください:\n` +
     `{\n` +
     `  "isHealthRelated": boolean,\n` +
@@ -795,8 +795,8 @@ export async function analyzeHealthConsultation(params: {
     `- isHealthRelated: 体調不良、怪我、病気の相談があればtrue\n` +
     `- symptomType: 症状から適切な診療科を推測\n` +
     `- urgency: "今すぐ"/"すぐに"なら"immediate", "今日"なら"today", "今週中"なら"this_week", その他は"flexible"\n` +
-    `- needsMedicalFacility: ワーカーが病院を探している、または病院が必要な状況ならtrue\n` +
-    `- hasAddress: ワーカーの住所が登録されているかどうか\n` +
+    `- needsMedicalFacility: メンバーが病院を探している、または病院が必要な状況ならtrue\n` +
+    `- hasAddress: メンバーの住所が登録されているかどうか\n` +
     `- injuryContext: 怪我の場合、仕事中か否か等の経緯(労災判定に必要)\n` +
     `- suggestedQuestions: まだ聞いていない重要な情報(症状の詳細、いつ病院に行きたいか、怪我の経緯など)があれば、質問を提案`
 

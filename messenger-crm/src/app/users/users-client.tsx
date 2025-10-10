@@ -33,7 +33,7 @@ interface UsersClientProps {
 }
 
 const ROLE_LABELS: Record<UserRole, string> = {
-  WORKER: "ワーカー",
+  WORKER: "メンバー",
   MANAGER: "マネージャー",
   AREA_MANAGER: "エリアマネージャー",
   SYSTEM_ADMIN: "システム管理者",
@@ -583,7 +583,7 @@ export default function UsersClient({ currentUser }: UsersClientProps) {
             {createRole === UserRole.WORKER && (
               <>
                 <div className="border-t pt-3">
-                  <p className="text-sm font-medium text-muted-foreground mb-3">任意情報（ワーカーのみ）</p>
+                  <p className="text-sm font-medium text-muted-foreground mb-3">任意情報（メンバーのみ）</p>
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground" htmlFor="create-country">
