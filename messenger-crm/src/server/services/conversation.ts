@@ -339,7 +339,24 @@ async function handleHealthConsultationFlow(
   // COMPLETEDステートの場合、新しい健康相談が検出されたらリセット
   if (currentState === "COMPLETED" && healthAnalysis.isHealthRelated) {
     console.log("[health-consultation] Resetting completed consultation for new health issue")
+    // データベースもリセット
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        healthConsultationState: null,
+        healthConsultationData: null,
+      },
+    })
     currentState = null
+
+    // フロントエンドに状態リセットを通知
+    if (global.io) {
+      global.io.to(`conversation-${conversationId}`).emit('conversation-state-updated', {
+        conversationId,
+        healthConsultationState: null,
+      })
+      console.log(`[WebSocket] Notified frontend of health consultation state reset`)
+    }
   }
 
   // キャンセルメッセージの検出（最優先で処理）
@@ -429,6 +446,14 @@ async function handleHealthConsultationFlow(
         healthConsultationData: healthAnalysis as Prisma.InputJsonValue,
       },
     })
+
+    // フロントエンドに状態変更を通知
+    if (global.io) {
+      global.io.to(`conversation-${conversationId}`).emit('conversation-state-updated', {
+        conversationId,
+        healthConsultationState: "WAITING_FOR_INTENT",
+      })
+    }
 
     return true
   }
@@ -560,6 +585,14 @@ async function handleHealthConsultationFlow(
             } as Prisma.InputJsonValue,
           },
         })
+
+        // フロントエンドに状態変更を通知
+        if (global.io) {
+          global.io.to(`conversation-${conversationId}`).emit('conversation-state-updated', {
+            conversationId,
+            healthConsultationState: "WAITING_FOR_SCHEDULE",
+          })
+        }
       }
 
       await sendSystemMessage({

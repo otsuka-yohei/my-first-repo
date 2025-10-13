@@ -20,6 +20,9 @@ export interface MedicalFacility {
   types?: string[]
   distanceMeters?: number
   travelTimeMinutes?: number
+  phoneNumber?: string
+  openNow?: boolean
+  acceptsForeigners?: boolean
 }
 
 export interface SearchMedicalFacilitiesParams {

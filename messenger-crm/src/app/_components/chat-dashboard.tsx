@@ -36,6 +36,7 @@ type MessageItem = {
   metadata?: {
     type?: string
     facilities?: MedicalFacility[]
+    healthConsultationState?: string
     healthAnalysis?: {
       isHealthRelated: boolean
       symptomType?: string
@@ -903,19 +904,15 @@ function ManagerChatDashboard({
       })
 
       // メッセージのmetadataにhealthConsultationStateが含まれている場合、conversationも更新
-      const metadata = message.metadata as { healthConsultationState?: string } | null
-      console.log('[WebSocket] Checking metadata for healthConsultationState:', metadata)
-      if (metadata?.healthConsultationState) {
-        console.log('[WebSocket] Updating conversation healthConsultationState:', metadata.healthConsultationState)
-        setConversation(prev => {
+      if (message.metadata?.healthConsultationState) {
+        console.log('[WebSocket] Manager: Updating healthConsultationState:', message.metadata.healthConsultationState)
+        setSelectedConversation(prev => {
           if (!prev) return prev
           return {
             ...prev,
-            healthConsultationState: metadata.healthConsultationState as string | null,
+            healthConsultationState: message.metadata.healthConsultationState!,
           }
         })
-      } else {
-        console.log('[WebSocket] No healthConsultationState in metadata')
       }
     }
 
@@ -937,13 +934,27 @@ function ManagerChatDashboard({
       })
     }
 
+    // 会話状態更新を受信（健康相談状態のリセットなど）
+    const handleConversationStateUpdated = ({ healthConsultationState }: { conversationId: string; healthConsultationState: string | null }) => {
+      console.log('[WebSocket] Manager: Received conversation-state-updated, healthConsultationState:', healthConsultationState)
+      setSelectedConversation(prev => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          healthConsultationState: healthConsultationState,
+        }
+      })
+    }
+
     socket.on('new-message', handleNewMessage)
     socket.on('message-updated', handleMessageUpdated)
+    socket.on('conversation-state-updated', handleConversationStateUpdated)
 
     return () => {
       socket.emit('leave-conversation', selectedConversationId)
       socket.off('new-message', handleNewMessage)
       socket.off('message-updated', handleMessageUpdated)
+      socket.off('conversation-state-updated', handleConversationStateUpdated)
     }
   }, [selectedConversationId])
 
@@ -1348,19 +1359,15 @@ function WorkerChatDashboard({
       })
 
       // メッセージのmetadataにhealthConsultationStateが含まれている場合、conversationも更新
-      const metadata = message.metadata as { healthConsultationState?: string } | null
-      console.log('[WebSocket] Checking metadata for healthConsultationState:', metadata)
-      if (metadata?.healthConsultationState) {
-        console.log('[WebSocket] Updating conversation healthConsultationState:', metadata.healthConsultationState)
-        setConversation(prev => {
+      if (message.metadata?.healthConsultationState) {
+        console.log('[WebSocket] Worker: Updating healthConsultationState:', message.metadata.healthConsultationState)
+        setConversationDetail(prev => {
           if (!prev) return prev
           return {
             ...prev,
-            healthConsultationState: metadata.healthConsultationState as string | null,
+            healthConsultationState: message.metadata.healthConsultationState!,
           }
         })
-      } else {
-        console.log('[WebSocket] No healthConsultationState in metadata')
       }
     }
 
@@ -1382,13 +1389,27 @@ function WorkerChatDashboard({
       })
     }
 
+    // 会話状態更新を受信（健康相談状態のリセットなど）
+    const handleConversationStateUpdated = ({ healthConsultationState }: { conversationId: string; healthConsultationState: string | null }) => {
+      console.log('[WebSocket] Worker: Received conversation-state-updated, healthConsultationState:', healthConsultationState)
+      setConversationDetail(prev => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          healthConsultationState: healthConsultationState,
+        }
+      })
+    }
+
     socket.on('new-message', handleNewMessage)
     socket.on('message-updated', handleMessageUpdated)
+    socket.on('conversation-state-updated', handleConversationStateUpdated)
 
     return () => {
       socket.emit('leave-conversation', selectedConversationId)
       socket.off('new-message', handleNewMessage)
       socket.off('message-updated', handleMessageUpdated)
+      socket.off('conversation-state-updated', handleConversationStateUpdated)
     }
   }, [selectedConversationId])
 
