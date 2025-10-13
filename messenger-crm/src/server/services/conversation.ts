@@ -2,7 +2,7 @@ import { MessageType, UserRole, Prisma, MembershipRole } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM, segmentConversation, analyzeHealthConsultation } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation, analyzeHealthConsultation, translateMessage, generateSuggestedReplies, analyzeConsultationIntent, type SuggestedReply, type EnhancedSuggestionRequest } from "@/server/llm/service"
 import { searchMedicalFacilities, type MedicalFacility } from "@/server/services/medical"
 
 interface SessionUser {
@@ -318,55 +318,560 @@ export async function appendMessage(params: {
 }
 
 /**
- * システムメッセージを会話に送信
+ * 健康相談の対話フローを処理
+ */
+async function handleHealthConsultationFlow(
+  conversationId: string,
+  healthAnalysis: Awaited<ReturnType<typeof analyzeHealthConsultation>>,
+  currentState: string | null,
+  workerAddress: string | null,
+  latestWorkerMessage?: {
+    body: string
+    senderRole: string
+  },
+  conversationHistory?: Array<{
+    body: string
+    senderRole: string
+  }>,
+) {
+  console.log(`[health-consultation] Starting flow for conversation ${conversationId}, current state: ${currentState || 'none'}`)
+
+  // COMPLETEDステートの場合、新しい健康相談が検出されたらリセット
+  if (currentState === "COMPLETED" && healthAnalysis.isHealthRelated) {
+    console.log("[health-consultation] Resetting completed consultation for new health issue")
+    currentState = null
+  }
+
+  // キャンセルメッセージの検出（最優先で処理）
+  if (latestWorkerMessage && currentState && currentState !== "COMPLETED") {
+    const cancelKeywords = ['医療相談を中止', '中止します', 'キャンセル', 'やめます', 'Tôi muốn dừng tư vấn y tế', 'Hủy', 'Dừng']
+    const isCancelled = cancelKeywords.some(keyword => latestWorkerMessage.body.includes(keyword))
+
+    if (isCancelled) {
+      console.log("[health-consultation] User requested cancellation")
+
+      // ワーカーのlocaleを取得
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: {
+          worker: {
+            select: { locale: true },
+          },
+        },
+      })
+
+      const workerLocale = conversation?.worker.locale || "ja"
+
+      // 事前に翻訳されたメッセージ（翻訳APIの呼び出しをスキップして高速化）
+      const cancelMessages: Record<string, string> = {
+        ja: "承知しました。医療相談を中止します。\n\nまた何かございましたら、いつでもお知らせください。",
+        vi: "承知しました。医療相談を中止します。\n\nまた何かございましたら、いつでもお知らせください。\n\n---TRANSLATION---\n\nĐã hiểu. Tôi sẽ dừng tư vấn y tế.\n\nNếu có gì, hãy cho tôi biết bất cứ lúc nào.",
+      }
+
+      await sendSystemMessage({
+        conversationId,
+        body: cancelMessages[workerLocale] || cancelMessages.ja,
+        metadata: {
+          type: "health_consultation_cancelled",
+        },
+        skipTranslation: true, // 事前翻訳済みのため翻訳をスキップ
+      })
+
+      // ステート更新: COMPLETED
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          healthConsultationState: "COMPLETED",
+        },
+      })
+
+      return true
+    }
+  }
+
+  // ①初回検出：受診希望の確認
+  if (!currentState && healthAnalysis.isHealthRelated) {
+    console.log("[health-consultation] Initial detection - sending confirmation message")
+
+    // 質問リストを整形
+    const questionsText = healthAnalysis.suggestedQuestions && healthAnalysis.suggestedQuestions.length > 0
+      ? `\n\n${healthAnalysis.suggestedQuestions.join('\n')}`
+      : ""
+
+    const confirmationMessage = `大丈夫ですか？心配ですね。${questionsText}\n\n病院に行く必要がありそうですか？`
+
+    await sendSystemMessage({
+      conversationId,
+      body: confirmationMessage,
+      metadata: {
+        type: "health_consultation_confirmation",
+        showYesNoButtons: true,
+        healthAnalysis,
+      },
+    })
+
+    // ステート更新: WAITING_FOR_INTENT
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        healthConsultationState: "WAITING_FOR_INTENT",
+        healthConsultationData: healthAnalysis as Prisma.InputJsonValue,
+      },
+    })
+
+    return true
+  }
+
+  // ③日時情報の取得（WAITING_FOR_SCHEDULEステート）
+  if (currentState === "WAITING_FOR_SCHEDULE" && latestWorkerMessage && conversationHistory) {
+    console.log("[health-consultation] Analyzing schedule preference")
+
+    const intentAnalysis = await analyzeConsultationIntent({
+      workerMessage: latestWorkerMessage.body,
+      conversationHistory,
+    })
+
+    console.log("[health-consultation] Schedule analysis result:", intentAnalysis)
+
+    if (intentAnalysis.preferredDate || intentAnalysis.timePreference) {
+      // 日時情報が取得できた
+      const dateStr = intentAnalysis.preferredDate === "today" ? "本日"
+        : intentAnalysis.preferredDate === "tomorrow" ? "明日"
+        : intentAnalysis.preferredDate === "this_week" ? "今週中"
+        : intentAnalysis.specificDate || ""
+
+      const timeStr = intentAnalysis.timePreference === "morning" ? "午前"
+        : intentAnalysis.timePreference === "afternoon" ? "午後"
+        : intentAnalysis.timePreference === "evening" ? "夕方"
+        : ""
+
+      await sendSystemMessage({
+        conversationId,
+        body: `承知しました。${dateStr}${timeStr}での受診をご希望とのことですね。\n\n近隣の医療機関を検索してお伝えします。少々お待ちください。`,
+        metadata: {
+          type: "health_consultation_schedule_confirmed",
+          intentAnalysis,
+        },
+      })
+
+      // ステート更新: PROVIDING_FACILITIES
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          healthConsultationState: "PROVIDING_FACILITIES",
+          healthConsultationData: {
+            ...healthAnalysis,
+            intentAnalysis,
+          } as Prisma.InputJsonValue,
+        },
+      })
+
+      return true
+    } else {
+      // 日時情報が不明確
+      await sendSystemMessage({
+        conversationId,
+        body: "申し訳ございませんが、ご希望の日時がわかりませんでした。\n\n例：\n・今日の午後\n・明日の午前中\n・今週中\n\nのようにお知らせください。",
+        metadata: {
+          type: "health_consultation_schedule_unclear",
+        },
+      })
+
+      return true
+    }
+  }
+
+  // ②受診希望の判定と日時確認
+  if (currentState === "WAITING_FOR_INTENT" && latestWorkerMessage && conversationHistory) {
+    console.log("[health-consultation] Analyzing consultation intent")
+
+    const intentAnalysis = await analyzeConsultationIntent({
+      workerMessage: latestWorkerMessage.body,
+      conversationHistory,
+    })
+
+    console.log("[health-consultation] Intent analysis result:", intentAnalysis)
+
+    if (intentAnalysis.wantsConsultation) {
+      // 受診希望あり - 日時を確認
+      let scheduleMessage = "承知しました。いつ受診したいですか？\n\n"
+
+      if (intentAnalysis.preferredDate || intentAnalysis.timePreference) {
+        // すでに希望日時が含まれている場合
+        const dateStr = intentAnalysis.preferredDate === "today" ? "本日"
+          : intentAnalysis.preferredDate === "tomorrow" ? "明日"
+          : intentAnalysis.preferredDate === "this_week" ? "今週中"
+          : intentAnalysis.specificDate || ""
+
+        const timeStr = intentAnalysis.timePreference === "morning" ? "午前"
+          : intentAnalysis.timePreference === "afternoon" ? "午後"
+          : intentAnalysis.timePreference === "evening" ? "夕方"
+          : ""
+
+        scheduleMessage = `承知しました。${dateStr}${timeStr}での受診をご希望とのことですね。\n\n近隣の医療機関を検索してお伝えします。少々お待ちください。`
+
+        // ステート更新: PROVIDING_FACILITIES（医療機関検索へ）
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            healthConsultationState: "PROVIDING_FACILITIES",
+            healthConsultationData: {
+              ...healthAnalysis,
+              intentAnalysis,
+            } as Prisma.InputJsonValue,
+          },
+        })
+      } else {
+        // 日時の希望がまだない場合
+        scheduleMessage += "例：\n・今日の午後\n・明日の午前中\n・今週中"
+
+        // ステート更新: WAITING_FOR_SCHEDULE
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            healthConsultationState: "WAITING_FOR_SCHEDULE",
+            healthConsultationData: {
+              ...healthAnalysis,
+              intentAnalysis,
+            } as Prisma.InputJsonValue,
+          },
+        })
+      }
+
+      await sendSystemMessage({
+        conversationId,
+        body: scheduleMessage,
+        metadata: {
+          type: "health_consultation_schedule_request",
+          intentAnalysis,
+        },
+      })
+
+      return true
+    } else {
+      // 受診希望なし - フロー終了
+      console.log("[health-consultation] No consultation requested - ending flow")
+
+      await sendSystemMessage({
+        conversationId,
+        body: "承知しました。\n\n無理せず、もし症状が悪化したらいつでもお知らせくださいね。お大事にしてください。\n\n【医療機関の紹介は終了しました】",
+        metadata: {
+          type: "health_consultation_declined",
+        },
+      })
+
+      // ステート更新: COMPLETED
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          healthConsultationState: "COMPLETED",
+        },
+      })
+
+      return true
+    }
+  }
+
+  // ⑤病院予約・受診時の日本語例文生成（PROVIDING_INSTRUCTIONSステート）
+  if (currentState === "PROVIDING_INSTRUCTIONS" && healthAnalysis.isHealthRelated) {
+    console.log("[health-consultation] Generating Japanese instructions")
+
+    const symptomDescription = healthAnalysis.symptomType === "内科" ? "お腹が痛い"
+      : healthAnalysis.symptomType === "外科" ? "怪我をした"
+      : healthAnalysis.symptomType === "整形外科" ? "足が痛い"
+      : healthAnalysis.symptomType === "歯科" ? "歯が痛い"
+      : healthAnalysis.symptomType === "皮膚科" ? "肌に異常がある"
+      : healthAnalysis.symptomType === "耳鼻咽喉科" ? "喉が痛い"
+      : healthAnalysis.symptomType === "眼科" ? "目が痛い"
+      : "体調が悪い"
+
+    const phoneExampleMessage = `## 📞 病院に予約電話をかける時の日本語例文
+
+「もしもし、予約（よやく）をしたいのですが」
+(Moshi moshi, yoyaku wo shitai no desu ga)
+
+「${symptomDescription}ので、診察（しんさつ）を受（う）けたいです」
+(${symptomDescription} node, shinsatsu wo uketai desu)
+
+「いつ行（い）けますか？」
+(Itsu ikemasu ka?)
+
+「名前（なまえ）は〇〇です」
+(Namae wa 〇〇 desu)
+
+「電話番号（でんわばんごう）は〇〇です」
+(Denwa bangou wa 〇〇 desu)`
+
+    const visitExampleMessage = `## 🏥 病院で受診する時の日本語例文
+
+受付（うけつけ）で：
+「初診（しょしん）です」
+(Shoshin desu)
+→ 初めて来た時に言います
+
+「保険証（ほけんしょう）を持（も）っています」
+(Hokenshou wo motte imasu)
+→ 保険証がある場合
+
+症状（しょうじょう）を説明する：
+「${symptomDescription}」
+
+「いつから？」と聞かれたら：
+「昨日（きのう）からです」(Kinou kara desu)
+「今朝（けさ）からです」(Kesa kara desu)
+「3日前（みっかまえ）からです」(Mikka mae kara desu)
+
+## 💊 よく使う医療用語
+
+・痛い（いたい）= itai = 痛い
+・熱（ねつ）= netsu = 熱
+・咳（せき）= seki = 咳
+・薬（くすり）= kusuri = 薬
+・注射（ちゅうしゃ）= chuusha = 注射
+
+何かわからないことがあれば、いつでもマネージャーに聞いてください。お大事にしてください。`
+
+    // 電話例文を送信
+    await sendSystemMessage({
+      conversationId,
+      body: phoneExampleMessage,
+      metadata: {
+        type: "health_consultation_phone_instructions",
+      },
+    })
+
+    // 受診例文を送信
+    await sendSystemMessage({
+      conversationId,
+      body: visitExampleMessage,
+      metadata: {
+        type: "health_consultation_visit_instructions",
+      },
+    })
+
+    // ステート更新: COMPLETED
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        healthConsultationState: "COMPLETED",
+      },
+    })
+
+    console.log("[health-consultation] Flow completed successfully")
+    return true
+  }
+
+  // ④医療機関検索と情報提供（PROVIDING_FACILITIESステート）
+  if (currentState === "PROVIDING_FACILITIES" && healthAnalysis.isHealthRelated) {
+    console.log("[health-consultation] Searching for medical facilities")
+
+    if (!workerAddress) {
+      // 住所が未登録の場合
+      await sendSystemMessage({
+        conversationId,
+        body: "申し訳ございませんが、住所が登録されていないため、医療機関を検索できません。\n\n設定ページから住所を登録してください。",
+        metadata: {
+          type: "health_consultation_no_address",
+        },
+      })
+
+      // ステート更新: COMPLETED
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          healthConsultationState: "COMPLETED",
+        },
+      })
+
+      return true
+    }
+
+    try {
+      // 医療機関を検索
+      const facilities = await searchMedicalFacilities({
+        address: workerAddress,
+        symptomType: healthAnalysis.symptomType || "内科",
+        urgency: healthAnalysis.urgency || "flexible",
+      })
+
+      if (facilities.length > 0) {
+        // 医療機関が見つかった場合
+        const facilityList = facilities.slice(0, 3).map((f, index) => {
+          const lines = [
+            `${index + 1}. **${f.name}**`,
+            `   📍 ${f.address}`,
+          ]
+          if (f.phoneNumber) {
+            lines.push(`   📞 ${f.phoneNumber}`)
+          }
+          if (f.openNow !== undefined) {
+            lines.push(`   ${f.openNow ? "✅ 現在営業中" : "⏰ 営業時間外"}`)
+          }
+          if (f.rating) {
+            lines.push(`   ⭐ 評価: ${f.rating}/5.0`)
+          }
+          if (f.acceptsForeigners) {
+            lines.push(`   🌐 外国人対応可能`)
+          }
+          return lines.join('\n')
+        }).join('\n\n')
+
+        const message = `近隣の医療機関を${facilities.length}件見つけました。以下をご検討ください：\n\n${facilityList}\n\n次のメッセージで、病院への予約電話や受診時の日本語例文をお伝えします。`
+
+        await sendSystemMessage({
+          conversationId,
+          body: message,
+          metadata: {
+            type: "health_consultation_facilities",
+            facilities: facilities.slice(0, 3),
+          },
+        })
+
+        // ステート更新: PROVIDING_INSTRUCTIONS
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            healthConsultationState: "PROVIDING_INSTRUCTIONS",
+            healthConsultationData: {
+              ...healthAnalysis,
+              facilities: facilities.slice(0, 3),
+            } as Prisma.InputJsonValue,
+          },
+        })
+
+        return true
+      } else {
+        // 医療機関が見つからなかった場合
+        await sendSystemMessage({
+          conversationId,
+          body: "申し訳ございませんが、近隣の医療機関が見つかりませんでした。\n\n別の地域や症状で再度検索することもできます。何かお手伝いできることがあれば教えてください。",
+          metadata: {
+            type: "health_consultation_no_facilities",
+          },
+        })
+
+        // ステート更新: COMPLETED
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            healthConsultationState: "COMPLETED",
+          },
+        })
+
+        return true
+      }
+    } catch (error) {
+      console.error("[health-consultation] Medical facility search failed:", error)
+
+      await sendSystemMessage({
+        conversationId,
+        body: "申し訳ございませんが、医療機関の検索中にエラーが発生しました。\n\nしばらく時間をおいて再度お試しいただくか、マネージャーにご相談ください。",
+        metadata: {
+          type: "health_consultation_search_error",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * システムメッセージを会話に送信（二言語対応）
+ * 日本語メッセージとワーカーのlocaleへの翻訳を両方表示
  */
 async function sendSystemMessage(params: {
   conversationId: string
   body: string
   language?: string
   metadata?: Record<string, unknown>
+  skipTranslation?: boolean // 翻訳をスキップする場合（既に翻訳済みの場合など）
 }) {
-  // システムユーザー（会話の最初のマネージャーを使用）
-  const conversation = await prisma.conversation.findUnique({
-    where: { id: params.conversationId },
-    include: {
-      group: {
-        include: {
-          memberships: {
-            where: { role: MembershipRole.MANAGER },
-            take: 1,
-            include: { user: true },
+  try {
+    console.log(`[system-message] Attempting to send system message to conversation ${params.conversationId}`)
+
+    // システムユーザー（会話の最初のマネージャーを使用）と会話情報を取得
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: params.conversationId },
+      include: {
+        worker: {
+          select: { locale: true },
+        },
+        group: {
+          include: {
+            memberships: {
+              where: { role: MembershipRole.MANAGER },
+              take: 1,
+              include: { user: true },
+            },
           },
         },
       },
-    },
-  })
+    })
 
-  if (!conversation?.group.memberships[0]) {
-    console.error("[system-message] No manager found for conversation")
+    if (!conversation) {
+      console.error("[system-message] Conversation not found:", params.conversationId)
+      return null
+    }
+
+    if (!conversation.group.memberships[0]) {
+      console.error(`[system-message] No manager found for conversation ${params.conversationId} in group ${conversation.group.id}`)
+      console.warn("[system-message] System message cannot be sent without a manager in the group")
+      return null
+    }
+
+    const systemSenderId = conversation.group.memberships[0].userId
+    console.log(`[system-message] Using manager ${systemSenderId} as system message sender`)
+
+    // 日本語メッセージをワーカーの言語に翻訳
+    let finalBody = params.body
+    const sourceLanguage = params.language || "ja"
+    const workerLocale = conversation.worker.locale || "ja"
+
+    if (!params.skipTranslation && sourceLanguage !== workerLocale) {
+      try {
+        console.log(`[system-message] Translating message from ${sourceLanguage} to ${workerLocale}`)
+        const translationResult = await translateMessage({
+          content: params.body,
+          sourceLanguage,
+          targetLanguage: workerLocale,
+        })
+
+        // 両言語を表示（日本語 / Worker's language）
+        // 区切りマーカーとして特別な文字列を使用
+        finalBody = `${params.body}\n\n---TRANSLATION---\n\n${translationResult.translation}`
+        console.log(`[system-message] Translation completed`)
+      } catch (error) {
+        console.error("[system-message] Translation failed, using original message:", error instanceof Error ? error.message : String(error))
+        // 翻訳失敗時は元のメッセージのみ使用
+      }
+    }
+
+    const message = await prisma.message.create({
+      data: {
+        conversationId: params.conversationId,
+        senderId: systemSenderId,
+        body: finalBody,
+        language: sourceLanguage,
+        type: MessageType.SYSTEM,
+        metadata: params.metadata as Prisma.InputJsonValue,
+      },
+    })
+
+    await prisma.conversation.update({
+      where: { id: params.conversationId },
+      data: { updatedAt: new Date() },
+    })
+
+    console.log(`[system-message] Created system message ${message.id}`)
+    return message
+  } catch (error) {
+    console.error("[system-message] Failed to send system message:", error instanceof Error ? error.message : String(error))
     return null
   }
-
-  const systemSenderId = conversation.group.memberships[0].userId
-
-  const message = await prisma.message.create({
-    data: {
-      conversationId: params.conversationId,
-      senderId: systemSenderId,
-      body: params.body,
-      language: params.language || "ja",
-      type: MessageType.SYSTEM,
-      metadata: params.metadata as Prisma.InputJsonValue,
-    },
-  })
-
-  await prisma.conversation.update({
-    where: { id: params.conversationId },
-    data: { updatedAt: new Date() },
-  })
-
-  console.log(`[system-message] Created system message ${message.id}`)
-  return message
 }
 
 async function enrichMessageInBackground(
@@ -410,7 +915,7 @@ async function enrichMessageInBackground(
         },
         messages: {
           orderBy: { createdAt: "desc" },
-          take: 10, // 直近10件
+          take: 3, // 直近3件（健康相談の判断に使用）
           include: {
             sender: { select: { role: true } },
           },
@@ -438,158 +943,182 @@ async function enrichMessageInBackground(
       daysSinceLastWorkerMessage = timeDiff / (1000 * 60 * 60 * 24)
     }
 
-    // フェーズ1: 翻訳を優先実行してすぐにDB更新
-    console.log(`[background] Phase 1: Priority translation for message ${messageId}`)
+    // フェーズ1: 翻訳のみを実行してすぐにDB更新（AI提案とは独立して処理）
+    console.log(`[background] Phase 1: Immediate translation for message ${messageId}`)
+    console.log(`[background] Translation params - content: "${content}", language: ${language}, targetLanguage: ${targetLanguage}`)
     const translationStartTime = Date.now()
 
-    const enrichment = await enrichMessageWithLLM({
-      content,
-      language,
-      targetLanguage,
-      workerLocale,
-      managerLocale,
-      conversationHistory: sortedMessages.map((msg) => ({
-        body: msg.body,
-        senderRole: msg.sender.role,
-        createdAt: msg.createdAt,
-      })),
-      workerInfo: {
-        name: conversation.worker.name,
-        locale: conversation.worker.locale,
-        countryOfOrigin: conversation.worker.countryOfOrigin,
-        dateOfBirth: conversation.worker.dateOfBirth,
-        gender: conversation.worker.gender,
-        address: conversation.worker.address,
-        phoneNumber: conversation.worker.phoneNumber,
-        jobDescription: conversation.worker.jobDescription,
-        hireDate: conversation.worker.hireDate,
-        notes: conversation.worker.notes,
-      },
-      groupInfo: {
-        name: conversation.group.name,
-        phoneNumber: conversation.group.phoneNumber,
-        address: conversation.group.address,
-      },
-      daysSinceLastWorkerMessage,
-    })
+    // 翻訳のみを先に実行（同じ言語の場合はスキップ）
+    const translation = content && language !== targetLanguage
+      ? await translateMessage({
+          content,
+          sourceLanguage: language,
+          targetLanguage,
+        })
+      : undefined
 
     const translationDuration = Date.now() - translationStartTime
     console.log(`[background] Phase 1 completed: Translation in ${translationDuration}ms`)
+    console.log(`[background] translation exists: ${!!translation}`)
 
     // 翻訳結果を即座にDB更新（ユーザーにすぐ表示される）
-    if (enrichment.translation) {
+    if (translation) {
       await prisma.messageLLMArtifact.upsert({
         where: { messageId },
         update: {
-          translation: enrichment.translation.translation,
+          translation: translation.translation,
           translationLang: targetLanguage,
           extra: {
-            provider: enrichment.translation.provider,
-            model: enrichment.translation.model,
+            provider: translation.provider,
+            model: translation.model,
           } as Prisma.InputJsonValue,
         },
         create: {
           messageId,
-          translation: enrichment.translation.translation,
+          translation: translation.translation,
           translationLang: targetLanguage,
           suggestions: [] as unknown as Prisma.InputJsonValue,
           extra: {
-            provider: enrichment.translation.provider,
-            model: enrichment.translation.model,
+            provider: translation.provider,
+            model: translation.model,
           } as Prisma.InputJsonValue,
         },
       })
       console.log(`[background] Translation saved to DB for immediate display`)
     }
 
-    // フェーズ2: 健康相談の分析（並列処理なし、翻訳後に実行）
+    // フェーズ2: 健康相談の分析（翻訳の次に優先実行）
     console.log(`[background] Phase 2: Health consultation analysis for message ${messageId}`)
-    let medicalFacilities: MedicalFacility[] | undefined
-    const healthAnalysis = await analyzeHealthConsultation({
-      conversationHistory: sortedMessages.map((msg) => ({
-        body: msg.body,
-        senderRole: msg.sender.role,
-        createdAt: msg.createdAt,
-      })),
-      workerInfo: {
-        address: conversation.worker.address,
-      },
-    })
+    console.log(`[background] Worker info - Address: ${conversation.worker.address || "未登録"}, Sender role: ${senderRole}`)
 
-    console.log("[background] Health consultation analysis:", healthAnalysis)
+    let healthAnalysis: Awaited<ReturnType<typeof analyzeHealthConsultation>> | null = null
+    let healthConsultationInProgress = false
 
-    // 健康相談で医療機関が必要な場合、自動検索してシステムメッセージを送信
-    if (
-      healthAnalysis.isHealthRelated &&
-      healthAnalysis.needsMedicalFacility &&
-      healthAnalysis.hasAddress &&
-      conversation.worker.address
-    ) {
-      try {
-        console.log("[background] Searching medical facilities for worker")
-        medicalFacilities = await searchMedicalFacilities({
+    try {
+      healthAnalysis = await analyzeHealthConsultation({
+        conversationHistory: sortedMessages.map((msg) => ({
+          body: msg.body,
+          senderRole: msg.sender.role,
+          createdAt: msg.createdAt,
+        })),
+        workerInfo: {
           address: conversation.worker.address,
-          symptomType: healthAnalysis.symptomType,
-          urgency: healthAnalysis.urgency,
-        })
-        console.log(`[background] Found ${medicalFacilities.length} medical facilities`)
-
-        // 医療機関が見つかった場合、システムメッセージとして送信
-        if (medicalFacilities.length > 0) {
-          const facilityMessage = `近隣の医療機関を${medicalFacilities.length}件見つけました。以下の医療機関をご検討ください。`
-          await sendSystemMessage({
-            conversationId,
-            body: facilityMessage,
-            language: conversation.worker.locale || "ja",
-            metadata: {
-              type: "medical_facilities",
-              facilities: medicalFacilities,
-              healthAnalysis,
-            },
-          })
-        }
-      } catch (error) {
-        console.error("[background] Failed to search medical facilities:", error)
-      }
-    } else if (healthAnalysis.isHealthRelated && !healthAnalysis.hasAddress) {
-      // 住所が未登録の場合、システムメッセージで通知
-      await sendSystemMessage({
-        conversationId,
-        body: "医療機関を検索するには、設定ページから住所を登録してください。",
-        language: conversation.worker.locale || "ja",
-        metadata: {
-          type: "medical_address_required",
-          healthAnalysis,
         },
       })
+
+      console.log("[background] Health consultation analysis completed:", healthAnalysis)
+    } catch (error) {
+      console.error("[background] Health consultation analysis failed:", error instanceof Error ? error.message : String(error))
+      // エラーが発生してもメッセージ処理は続行
+      healthAnalysis = { isHealthRelated: false }
     }
 
-    // フェーズ3: 提案と健康分析の結果を最終更新
-    console.log(`[background] Phase 3: Final update with suggestions and health analysis`)
+    // 健康相談の対話フローを処理（ワーカーからのメッセージの場合のみ）
+    if (healthAnalysis && healthAnalysis.isHealthRelated && senderRole === UserRole.MEMBER) {
+      try {
+        // 最新のワーカーメッセージを取得（senderRoleがMEMBERの最新メッセージ）
+        const latestWorkerMsg = sortedMessages
+          .filter(msg => msg.sender.role === UserRole.MEMBER)
+          .slice(-1)[0]
+
+        const flowHandled = await handleHealthConsultationFlow(
+          conversationId,
+          healthAnalysis,
+          conversation.healthConsultationState,
+          conversation.worker.address,
+          latestWorkerMsg ? {
+            body: latestWorkerMsg.body,
+            senderRole: latestWorkerMsg.sender.role,
+          } : undefined,
+          sortedMessages.map(msg => ({
+            body: msg.body,
+            senderRole: msg.sender.role,
+          })),
+        )
+
+        if (flowHandled) {
+          console.log("[background] Health consultation flow initiated")
+        }
+      } catch (error) {
+        console.error("[background] Health consultation flow failed:", error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    // 健康相談が検出された場合、フラグを立てる
+    if (healthAnalysis && healthAnalysis.isHealthRelated) {
+      healthConsultationInProgress = true
+      console.log("[background] Health consultation detected - will skip AI suggestions")
+    }
+
+    // フェーズ3: AI提案生成（健康相談中はスキップ）
+    console.log(`[background] Phase 3: AI suggestion generation for message ${messageId}`)
+    const suggestionStartTime = Date.now()
+
+    let suggestions: SuggestedReply[] = []
+    if (!healthConsultationInProgress) {
+      try {
+        suggestions = await generateSuggestedReplies({
+          conversationHistory: sortedMessages.map((msg) => ({
+            body: msg.body,
+            senderRole: msg.sender.role,
+            createdAt: msg.createdAt,
+          })),
+          workerInfo: {
+            name: conversation.worker.name,
+            locale: conversation.worker.locale,
+            countryOfOrigin: conversation.worker.countryOfOrigin,
+            dateOfBirth: conversation.worker.dateOfBirth,
+            gender: conversation.worker.gender,
+            address: conversation.worker.address,
+            phoneNumber: conversation.worker.phoneNumber,
+            jobDescription: conversation.worker.jobDescription,
+            hireDate: conversation.worker.hireDate,
+            notes: conversation.worker.notes,
+          },
+          groupInfo: {
+            name: conversation.group.name,
+            phoneNumber: conversation.group.phoneNumber,
+            address: conversation.group.address,
+          },
+          language: managerLocale || "ja",
+          persona: "manager",
+          targetTranslationLanguage: workerLocale !== managerLocale ? workerLocale : undefined,
+          daysSinceLastWorkerMessage,
+        } as EnhancedSuggestionRequest)
+
+        const suggestionDuration = Date.now() - suggestionStartTime
+        console.log(`[background] Phase 3 completed: AI suggestions in ${suggestionDuration}ms`)
+      } catch (error) {
+        console.error("[background] AI suggestion generation failed:", error instanceof Error ? error.message : String(error))
+        // エラーが発生してもメッセージ処理は続行
+      }
+    } else {
+      console.log("[background] Phase 3 skipped: Health consultation in progress")
+    }
+
+    // フェーズ4: 提案と健康分析の結果を最終更新
+    console.log(`[background] Phase 4: Final update with suggestions and health analysis`)
     const extraData: Record<string, unknown> = {
-      provider: enrichment.translation?.provider,
-      model: enrichment.translation?.model,
+      provider: translation?.provider,
+      model: translation?.model,
+      healthConsultationInProgress,
     }
 
-    if (healthAnalysis.isHealthRelated) {
+    if (healthAnalysis && healthAnalysis.isHealthRelated) {
       extraData.healthAnalysis = healthAnalysis
-    }
-
-    if (medicalFacilities && medicalFacilities.length > 0) {
-      extraData.medicalFacilities = medicalFacilities
     }
 
     await prisma.messageLLMArtifact.upsert({
       where: { messageId },
       update: {
-        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
+        suggestions: (suggestions ?? []) as unknown as Prisma.InputJsonValue,
         extra: extraData as Prisma.InputJsonValue,
       },
       create: {
         messageId,
-        translation: enrichment.translation?.translation,
+        translation: translation?.translation,
         translationLang: targetLanguage,
-        suggestions: (enrichment.suggestions ?? []) as unknown as Prisma.InputJsonValue,
+        suggestions: (suggestions ?? []) as unknown as Prisma.InputJsonValue,
         extra: extraData as Prisma.InputJsonValue,
       },
     })

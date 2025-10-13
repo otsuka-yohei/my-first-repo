@@ -45,6 +45,15 @@ enum CasePriority {
   LOW
 }
 
+enum HealthConsultationState {
+  INITIAL_DETECTED
+  WAITING_FOR_INTENT
+  WAITING_FOR_SCHEDULE
+  PROVIDING_FACILITIES
+  PROVIDING_INSTRUCTIONS
+  COMPLETED
+}
+
 enum SuggestionAction {
   USED_AS_IS
   USED_WITH_EDIT
@@ -130,18 +139,20 @@ model GroupMembership {
 }
 
 model Conversation {
-  id           String                 @id @default(cuid())
-  group        Group                  @relation(fields: [groupId], references: [id])
-  groupId      String
-  worker       User                   @relation("ConversationOwner", fields: [workerId], references: [id])
-  workerId     String
-  subject      String?
-  status       ConversationStatus     @default(ACTIVE)
-  messages     Message[]
-  consultation ConsultationCase?
-  segments     ConversationSegment[]
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
+  id                       String                    @id @default(cuid())
+  group                    Group                     @relation(fields: [groupId], references: [id])
+  groupId                  String
+  worker                   User                      @relation("ConversationOwner", fields: [workerId], references: [id])
+  workerId                 String
+  subject                  String?
+  status                   ConversationStatus        @default(ACTIVE)
+  healthConsultationState  HealthConsultationState?
+  healthConsultationData   Json?
+  messages                 Message[]
+  consultation             ConsultationCase?
+  segments                 ConversationSegment[]
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
 }
 
 model Message {

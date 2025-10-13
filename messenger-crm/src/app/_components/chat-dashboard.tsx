@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Bot, ExternalLink, MessageSquare, Settings, X } from "lucide-react"
 
+import { getSocket } from "@/lib/socket"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -105,6 +106,7 @@ type ConversationDetail = {
   subject: string | null
   status: string
   updatedAt?: string
+  healthConsultationState?: string | null
   group: { id: string; name: string }
   worker: { id: string; name: string | null; locale: string | null; notes?: string | null }
   consultation: (ConsultationCase & { description?: string | null }) | null
@@ -189,6 +191,7 @@ type ChatDashboardProps = {
     id: string
     role: UserRole
     name?: string | null
+    locale?: string | null
   }
 }
 
@@ -254,8 +257,11 @@ function ManagerChatDashboard({
   } | null>(null)
   const [checkingCompliance, setCheckingCompliance] = useState(false)
   const [bypassCompliance, setBypassCompliance] = useState(false)
+  const [showNewMessageAlert, setShowNewMessageAlert] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const prevConversationIdRef = useRef<string | null>(null)
+  const prevMessageCountRef = useRef<number>(0)
   const workerDirectory = useMemo(() => {
     const map: Record<string, WorkerOption> = {}
     for (const worker of availableWorkers) {
@@ -591,6 +597,14 @@ function ManagerChatDashboard({
         ),
       )
 
+      // 翻訳が完了するまでポーリング（バックグラウンド処理の完了を待つ）
+      if (data.message.id) {
+        console.log(`[send] Message sent successfully. ID: ${data.message.id}, starting polling...`)
+        void pollForTranslation(data.message.id, selectedConversationId)
+      } else {
+        console.warn("[send] Message sent but no ID returned")
+      }
+
       // AI提案を使用した場合、ログを記録
       if (usedSuggestion) {
         const action =
@@ -621,6 +635,14 @@ function ManagerChatDashboard({
       setComposer(messageToSend)
     } finally {
       setSending(false)
+    }
+  }
+
+  function scrollToBottom() {
+    const container = messagesRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+      setShowNewMessageAlert(false)
     }
   }
 
@@ -693,6 +715,61 @@ function ManagerChatDashboard({
     })
   }
 
+  // 翻訳完了をポーリングする関数
+  const pollForTranslation = useCallback(async (messageId: string, conversationId: string) => {
+    console.log(`[poll] Starting translation polling for message ${messageId}`)
+    const maxAttempts = 10 // 最大10回試行（約3秒）
+    const pollInterval = 300 // 300msごとにチェック
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // 最初の試行は待たずにすぐチェック、2回目以降は待機
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, pollInterval))
+        }
+
+        console.log(`[poll] Attempt ${attempt + 1}/${maxAttempts} - fetching conversation ${conversationId}`)
+
+        // 会話全体を再取得
+        const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+          method: "GET",
+          cache: "no-store",
+        })
+
+        if (!res.ok) {
+          console.warn(`[poll] Fetch failed with status ${res.status}`)
+          continue
+        }
+
+        const data = await readJson<{
+          conversation: ConversationDetail & { messages: MessageItem[] }
+        }>(res)
+
+        // 該当メッセージを探す
+        const updatedMessage = data.conversation.messages.find((msg) => msg.id === messageId)
+
+        if (updatedMessage) {
+          console.log(`[poll] Message found. Has translation: ${!!updatedMessage.llmArtifact?.translation}`)
+        } else {
+          console.warn(`[poll] Message ${messageId} not found in conversation`)
+        }
+
+        if (updatedMessage?.llmArtifact?.translation) {
+          // 翻訳が完了している場合、メッセージを更新
+          console.log(`[poll] ✅ Translation completed for message ${messageId} after ${attempt + 1} attempts`)
+          setMessages((current) =>
+            current.map((msg) => (msg.id === messageId ? updatedMessage : msg))
+          )
+          return // 成功したら終了
+        }
+      } catch (error) {
+        console.error("[poll] Failed to fetch translation:", error)
+      }
+    }
+
+    console.warn(`[poll] ⏱️ Translation polling timeout for message ${messageId} after ${maxAttempts} attempts`)
+  }, [])
+
   const handleRegenerateSuggestions = useCallback(async () => {
     if (!selectedConversationId) return
     setRegeneratingSuggestions(true)
@@ -722,6 +799,20 @@ function ManagerChatDashboard({
           ...prev,
           [selectedConversationId]: data.message.llmArtifact?.suggestions ?? [],
         }))
+      }
+
+      // 再生成後、会話全体を再読み込みして最新の状態を取得
+      const refreshRes = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
+        method: "GET",
+        cache: "no-store",
+      })
+
+      if (refreshRes.ok) {
+        const refreshData = await readJson<{
+          conversation: ConversationDetail & { messages: MessageItem[] }
+        }>(refreshRes)
+        setSelectedConversation(refreshData.conversation)
+        setMessages(refreshData.conversation.messages ?? [])
       }
     } catch (error) {
       console.error(error)
@@ -781,6 +872,98 @@ function ManagerChatDashboard({
       setSavingNotes(false)
     }
   }
+
+  // 自動スクロールロジック（システムメッセージと自分のメッセージは常にスクロール）
+  useEffect(() => {
+    const container = messagesRef.current
+    if (!container) return
+
+    // 会話が変更された場合は常に最下部にスクロール
+    if (prevConversationIdRef.current !== selectedConversationId) {
+      prevConversationIdRef.current = selectedConversationId
+      prevMessageCountRef.current = messages.length
+      container.scrollTop = container.scrollHeight
+      setShowNewMessageAlert(false)
+      return
+    }
+
+    // メッセージが追加されたかチェック
+    const messageAdded = messages.length > prevMessageCountRef.current
+    prevMessageCountRef.current = messages.length
+
+    if (messageAdded) {
+      // 新しいメッセージを確認
+      const latestMessage = messages[messages.length - 1]
+
+      // システムメッセージまたはユーザー自身のメッセージの場合は常にスクロール
+      if (
+        latestMessage?.type === "SYSTEM" ||
+        latestMessage?.sender.id === currentUser.id
+      ) {
+        console.log("[scroll] Auto-scrolling for system or own message")
+        container.scrollTop = container.scrollHeight
+        setShowNewMessageAlert(false)
+        return
+      }
+
+      // その他のメッセージの場合は、ユーザーが最下部付近にいる場合のみ自動スクロール
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+      if (isNearBottom) {
+        container.scrollTop = container.scrollHeight
+        setShowNewMessageAlert(false)
+      } else {
+        // 最下部にいない場合は新着メッセージアラートを表示
+        console.log("[scroll] User not at bottom, showing new message alert")
+        setShowNewMessageAlert(true)
+      }
+    }
+  }, [messages, selectedConversationId, currentUser.id])
+
+  // 手動スクロールで最下部に到達したらアラートを非表示
+  useEffect(() => {
+    const container = messagesRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+      if (isNearBottom && showNewMessageAlert) {
+        setShowNewMessageAlert(false)
+      }
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [showNewMessageAlert])
+
+  // WebSocketリスナー（新しいメッセージの受信用）
+  useEffect(() => {
+    if (!selectedConversationId) return
+
+    const socket = getSocket()
+
+    // 会話ルームに参加
+    socket.emit('join-conversation', selectedConversationId)
+
+    // 新しいメッセージを受信
+    const handleNewMessage = ({ message }: { conversationId: string; message: MessageItem }) => {
+      console.log('[WebSocket] Received new message', message.id)
+      setMessages(prev => {
+        // 重複チェック（楽観的UIで既に表示されている場合がある）
+        if (prev.some(m => m.id === message.id)) {
+          console.log('[WebSocket] Message already exists, skipping')
+          return prev
+        }
+        return [...prev, message]
+      })
+    }
+
+    socket.on('new-message', handleNewMessage)
+
+    return () => {
+      socket.emit('leave-conversation', selectedConversationId)
+      socket.off('new-message', handleNewMessage)
+    }
+  }, [selectedConversationId])
 
   return (
     <div
@@ -853,6 +1036,8 @@ function ManagerChatDashboard({
             onClearComplianceAlert={() => setComplianceAlert(null)}
             onBypassCompliance={() => setBypassCompliance(true)}
             checkingCompliance={checkingCompliance}
+            showNewMessageAlert={showNewMessageAlert}
+            onScrollToBottom={scrollToBottom}
           />
         </div>
 
@@ -914,11 +1099,13 @@ function WorkerChatDashboard({
   // グループごとに会話を整理
   // 既存の会話とメンバーグループの両方を含める
   const groupConversations = useMemo(() => {
+    console.log(`[worker-chat] Building groupConversations. Initial conversations: ${initialConversations.length}, Available groups: ${availableGroups.length}`)
     const grouped = new Map<string, ConversationSummary>()
 
     // 既存の会話を追加
     for (const conv of initialConversations) {
       if (!grouped.has(conv.group.id)) {
+        console.log(`[worker-chat] Adding existing conversation for group ${conv.group.id} (${conv.group.name})`)
         grouped.set(conv.group.id, conv)
       }
     }
@@ -926,6 +1113,7 @@ function WorkerChatDashboard({
     // メンバーグループで会話がまだないものを追加
     for (const group of availableGroups) {
       if (!grouped.has(group.id)) {
+        console.log(`[worker-chat] Creating placeholder conversation for group ${group.id} (${group.name})`)
         // 仮のConversationSummaryを作成
         grouped.set(group.id, {
           id: `placeholder-${group.id}`,
@@ -940,7 +1128,9 @@ function WorkerChatDashboard({
       }
     }
 
-    return Array.from(grouped.values())
+    const result = Array.from(grouped.values())
+    console.log(`[worker-chat] Built ${result.length} group conversations:`, result.map(c => ({ id: c.id, groupName: c.group.name })))
+    return result
   }, [initialConversations, availableGroups, currentUser.id, currentUser.name])
 
   const [conversations, setConversations] = useState(initialConversations)
@@ -956,14 +1146,19 @@ function WorkerChatDashboard({
   const [sendError, setSendError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
   const [mobileView, setMobileView] = useState<"list" | "chat">("list")
+  const [showNewMessageAlert, setShowNewMessageAlert] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const prevConversationIdRef = useRef<string | null>(null)
+  const prevMessageCountRef = useRef<number>(0)
 
   useEffect(() => {
     setConversations(initialConversations)
   }, [initialConversations])
 
   useEffect(() => {
+    console.log(`[worker-chat] groupConversations effect triggered. Length: ${groupConversations.length}, selectedGroupId: ${selectedGroupId}`)
     if (groupConversations.length === 0) {
+      console.log(`[worker-chat] No group conversations, clearing selection`)
       setSelectedGroupId(null)
       setSelectedConversationId(null)
       setConversationDetail(null)
@@ -971,14 +1166,24 @@ function WorkerChatDashboard({
       return
     }
 
-    if (!selectedGroupId) {
-      void handleSelectGroup(groupConversations[0].group)
+    if (!selectedGroupId && groupConversations.length > 0) {
+      console.log(`[worker-chat] No group selected, auto-selecting first group:`, groupConversations[0].group)
+      const firstGroup = groupConversations[0].group
+      const firstConversation = groupConversations[0]
+
+      // 直接stateを更新（handleSelectGroupを呼ばない）
+      setSelectedGroup(firstGroup)
+      setSelectedGroupId(firstGroup.id)
+      setSelectedConversationId(firstConversation.id)
+      setMobileView("chat")
+      setError(null)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupConversations])
+  }, [groupConversations, selectedGroupId])
 
   useEffect(() => {
+    console.log(`[worker-chat] selectedConversationId effect triggered. ID: ${selectedConversationId}`)
     if (!selectedConversationId) {
+      console.log(`[worker-chat] No conversation selected, clearing state`)
       setConversationDetail(null)
       setMessages([])
       return
@@ -986,6 +1191,7 @@ function WorkerChatDashboard({
 
     // プレースホルダーIDの場合は会話を読み込まない
     if (selectedConversationId.startsWith("placeholder-")) {
+      console.log(`[worker-chat] Placeholder ID detected, not loading conversation`)
       setConversationDetail(null)
       setMessages([])
       setLoading(false)
@@ -1075,12 +1281,105 @@ function WorkerChatDashboard({
     }
   }, [selectedConversationId])
 
+  // WebSocketリスナー（新しいメッセージの受信用）
   useEffect(() => {
+    if (!selectedConversationId) return
+
+    const socket = getSocket()
+
+    // 会話ルームに参加
+    socket.emit('join-conversation', selectedConversationId)
+
+    // 新しいメッセージを受信
+    const handleNewMessage = ({ message }: { conversationId: string; message: MessageItem }) => {
+      console.log('[WebSocket] Received new message', message.id)
+      setMessages(prev => {
+        // 重複チェック（楽観的UIで既に表示されている場合がある）
+        if (prev.some(m => m.id === message.id)) {
+          console.log('[WebSocket] Message already exists, skipping')
+          return prev
+        }
+        return [...prev, message]
+      })
+    }
+
+    socket.on('new-message', handleNewMessage)
+
+    return () => {
+      socket.emit('leave-conversation', selectedConversationId)
+      socket.off('new-message', handleNewMessage)
+    }
+  }, [selectedConversationId])
+
+  useEffect(() => {
+    const container = messagesRef.current
+    if (!container) return
+
+    // 会話が変更された場合は常に最下部にスクロール
+    if (prevConversationIdRef.current !== selectedConversationId) {
+      prevConversationIdRef.current = selectedConversationId
+      prevMessageCountRef.current = messages.length
+      container.scrollTop = container.scrollHeight
+      setShowNewMessageAlert(false)
+      return
+    }
+
+    // メッセージが追加されたかチェック
+    const messageAdded = messages.length > prevMessageCountRef.current
+    prevMessageCountRef.current = messages.length
+
+    if (messageAdded) {
+      // 新しいメッセージを確認
+      const latestMessage = messages[messages.length - 1]
+
+      // システムメッセージまたはユーザー自身のメッセージの場合は常にスクロール
+      if (
+        latestMessage?.type === "SYSTEM" ||
+        latestMessage?.sender.id === currentUser.id
+      ) {
+        console.log("[scroll] Auto-scrolling for system or own message")
+        container.scrollTop = container.scrollHeight
+        setShowNewMessageAlert(false)
+        return
+      }
+
+      // その他のメッセージの場合は、ユーザーが最下部付近にいる場合のみ自動スクロール
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+      if (isNearBottom) {
+        container.scrollTop = container.scrollHeight
+        setShowNewMessageAlert(false)
+      } else {
+        // 最下部にいない場合は新着メッセージアラートを表示
+        console.log("[scroll] User not at bottom, showing new message alert")
+        setShowNewMessageAlert(true)
+      }
+    }
+  }, [messages, selectedConversationId, currentUser.id])
+
+  // 手動スクロールで最下部に到達したらアラートを非表示
+  useEffect(() => {
+    const container = messagesRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+      if (isNearBottom && showNewMessageAlert) {
+        setShowNewMessageAlert(false)
+      }
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [showNewMessageAlert])
+
+  // 新着メッセージボタンクリック時のスクロール処理
+  const scrollToBottom = () => {
     const container = messagesRef.current
     if (container) {
       container.scrollTop = container.scrollHeight
+      setShowNewMessageAlert(false)
     }
-  }, [messages, selectedConversationId])
+  }
 
   const filteredGroups = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
@@ -1137,20 +1436,80 @@ function WorkerChatDashboard({
     }
   }
 
+  // 翻訳完了をポーリングする関数（ワーカー用）
+  const pollForWorkerTranslation = useCallback(async (messageId: string, conversationId: string) => {
+    console.log(`[poll-worker] Starting translation polling for message ${messageId}`)
+    const maxAttempts = 10 // 最大10回試行（約3秒）
+    const pollInterval = 300 // 300msごとにチェック
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // 最初の試行は待たずにすぐチェック、2回目以降は待機
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, pollInterval))
+        }
+
+        console.log(`[poll-worker] Attempt ${attempt + 1}/${maxAttempts} - fetching conversation ${conversationId}`)
+
+        // 会話全体を再取得
+        const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+          method: "GET",
+          cache: "no-store",
+        })
+
+        if (!res.ok) {
+          console.warn(`[poll-worker] Fetch failed with status ${res.status}`)
+          continue
+        }
+
+        const data = await readJson<{
+          conversation: ConversationDetail & { messages: MessageItem[] }
+        }>(res)
+
+        // 該当メッセージを探す
+        const updatedMessage = data.conversation.messages.find((msg) => msg.id === messageId)
+
+        if (updatedMessage) {
+          console.log(`[poll-worker] Message found. Has translation: ${!!updatedMessage.llmArtifact?.translation}`)
+        } else {
+          console.warn(`[poll-worker] Message ${messageId} not found in conversation`)
+        }
+
+        if (updatedMessage?.llmArtifact?.translation) {
+          // 翻訳が完了している場合、メッセージを更新
+          console.log(`[poll-worker] ✅ Translation completed for message ${messageId} after ${attempt + 1} attempts`)
+          setMessages((current) =>
+            current.map((msg) => (msg.id === messageId ? updatedMessage : msg))
+          )
+          return // 成功したら終了
+        }
+      } catch (error) {
+        console.error("[poll-worker] Failed to fetch translation:", error)
+      }
+    }
+
+    console.warn(`[poll-worker] ⏱️ Translation polling timeout for message ${messageId} after ${maxAttempts} attempts`)
+  }, [])
+
   async function handleSelectGroup(group: { id: string; name: string }) {
+    console.log(`[worker-chat] handleSelectGroup called with group:`, group)
     setSelectedGroup(group)
     setSelectedGroupId(group.id)
     setError(null)
 
     // groupConversationsから該当する会話を探す（プレースホルダーを含む）
     const conversation = groupConversations.find((conv) => conv.group.id === group.id)
+    console.log(`[worker-chat] Found conversation:`, conversation)
 
     if (conversation) {
+      console.log(`[worker-chat] Setting conversation ID: ${conversation.id}`)
       setSelectedConversationId(conversation.id)
       setMobileView("chat")
     } else {
       // 見つからない場合はプレースホルダーIDを生成
-      setSelectedConversationId(`placeholder-${group.id}`)
+      const placeholderId = `placeholder-${group.id}`
+      console.log(`[worker-chat] Creating placeholder ID: ${placeholderId}`)
+      setSelectedConversationId(placeholderId)
       setMobileView("chat")
     }
   }
@@ -1183,7 +1542,7 @@ function WorkerChatDashboard({
         },
         body: JSON.stringify({
           body: composer.trim(),
-          language: "ja",
+          language: currentUser.locale || "vi",
         }),
       })
 
@@ -1205,6 +1564,14 @@ function WorkerChatDashboard({
             : conversation,
         ),
       )
+
+      // 翻訳が完了するまでポーリング（バックグラウンド処理の完了を待つ）
+      if (data.message.id) {
+        console.log(`[send-worker] Message sent successfully. ID: ${data.message.id}, starting polling...`)
+        void pollForWorkerTranslation(data.message.id, conversationId)
+      } else {
+        console.warn("[send-worker] Message sent but no ID returned")
+      }
     } catch (err) {
       console.error(err)
       setSendError("メッセージの送信に失敗しました。")
@@ -1317,15 +1684,31 @@ function WorkerChatDashboard({
         {selectedGroup ? (
           <ChatView
             conversation={
-              conversationDetail && selectedGroup
+              conversationDetail
                 ? {
                     ...conversationDetail,
                     messages,
                     worker: {
                       id: currentUser.id,
                       name: selectedGroup.name,
-                      locale: null,
+                      locale: currentUser.locale,
                     },
+                  }
+                : selectedConversationId?.startsWith("placeholder-")
+                ? {
+                    id: selectedConversationId,
+                    subject: null,
+                    status: "ACTIVE",
+                    group: selectedGroup,
+                    worker: {
+                      id: currentUser.id,
+                      name: selectedGroup.name,
+                      locale: currentUser.locale,
+                      notes: null,
+                    },
+                    consultation: null,
+                    messages: [],
+                    healthConsultationState: null,
                   }
                 : null
             }
@@ -1342,6 +1725,8 @@ function WorkerChatDashboard({
             messagesRef={messagesRef}
             preferredLanguage={preferredLanguage}
             currentUser={currentUser}
+            showNewMessageAlert={showNewMessageAlert}
+            onScrollToBottom={scrollToBottom}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center bg-slate-50">
@@ -1387,6 +1772,8 @@ type ChatViewProps = {
   onClearComplianceAlert?: () => void
   onBypassCompliance?: () => void
   checkingCompliance?: boolean
+  showNewMessageAlert?: boolean
+  onScrollToBottom?: () => void
 }
 
 function ChatView({
@@ -1409,6 +1796,8 @@ function ChatView({
   onClearComplianceAlert,
   onBypassCompliance,
   checkingCompliance,
+  showNewMessageAlert,
+  onScrollToBottom,
 }: ChatViewProps) {
   const internalMessagesRef = useRef<HTMLDivElement | null>(null)
   const mergedRef = messagesRef ?? internalMessagesRef
@@ -1419,9 +1808,24 @@ function ChatView({
 
   const messagePlaceholder = getMessagePlaceholder(preferredLanguage, conversation?.worker.locale)
 
+  // 前回の会話IDを保存
+  const prevConversationIdRef = useRef<string | null>(null)
+
   useEffect(() => {
     const container = mergedRef.current
-    if (container) {
+    if (!container) return
+
+    // 会話が変更された場合は常に最下部にスクロール
+    if (prevConversationIdRef.current !== conversation?.id) {
+      prevConversationIdRef.current = conversation?.id ?? null
+      container.scrollTop = container.scrollHeight
+      return
+    }
+
+    // 同じ会話でメッセージが追加された場合
+    // ユーザーが最下部付近にいる場合のみ自動スクロール
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+    if (isNearBottom) {
       container.scrollTop = container.scrollHeight
     }
   }, [mergedRef, messages, conversation?.id])
@@ -1493,7 +1897,9 @@ function ChatView({
             </AlertDialog>
           )}
 
-          <div ref={mergedRef} className="flex-1 min-h-0 space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
+          {/* メッセージエリアと新着通知ボタン */}
+          <div className="relative flex-1 min-h-0">
+            <div ref={mergedRef} className="h-full space-y-4 overflow-y-auto bg-slate-50 px-6 py-6">
             {loadingMessages ? (
               <p className="text-sm text-muted-foreground">読み込み中...</p>
             ) : loadingError ? (
@@ -1504,40 +1910,116 @@ function ChatView({
                 <p className="text-sm">相談者を選択してメッセージを開始</p>
               </div>
             ) : (
-              messages.map((message) => {
+              <>
+                {messages.map((message) => {
                 const isSystemMessage = message.type === "SYSTEM"
                 const translation = message.llmArtifact?.translation?.trim()
                 const medicalFacilities = message.metadata?.facilities || message.llmArtifact?.extra?.medicalFacilities
                 const _healthAnalysis = message.llmArtifact?.extra?.healthAnalysis
                 const urls = extractUrls(message.body)
 
-                // システムメッセージの場合
+                // システムメッセージの場合（マネージャーのメッセージスタイルで表示）
                 if (isSystemMessage) {
-                  return (
-                    <div key={message.id} className="flex justify-center">
-                      <div className="max-w-[85%] space-y-3">
-                        <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3">
-                          <div className="flex items-start gap-2">
-                            <Bot className="h-5 w-5 shrink-0 text-blue-600 mt-0.5" />
-                            <div className="flex-1">
-                              <p className="text-sm text-blue-900">{message.body}</p>
-                              <p className="mt-2 text-[10px] text-blue-600">
-                                {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
+                  // メッセージを翻訳マーカーで分割（日本語と翻訳を分ける）
+                  const translationMarker = '\n\n---TRANSLATION---\n\n'
+                  let japaneseText = message.body
+                  let translationText = ''
 
-                        {/* 医療機関カードの表示 */}
-                        {medicalFacilities && medicalFacilities.length > 0 && (
-                          <MedicalFacilitiesList
-                            facilities={medicalFacilities}
-                            title="近隣の医療機関"
-                          />
-                        )}
+                  // 翻訳マーカーが存在する場合、日本語と翻訳を分ける
+                  if (message.body.includes(translationMarker)) {
+                    const parts = message.body.split(translationMarker)
+                    japaneseText = parts[0]
+                    translationText = parts[1] || ''
+                  }
+
+                  const showYesNoButtons = message.metadata?.showYesNoButtons === true
+
+                  // Yes/Noボタンのラベルをlocaleに応じて変更
+                  const yesLabel = conversation?.worker.locale === 'vi' ? 'Có' : 'はい'
+                  const noLabel = conversation?.worker.locale === 'vi' ? 'Không' : 'いいえ'
+
+                  return (
+                    <div key={message.id}>
+                      {/* 送信者名表示 */}
+                      <p className="mb-1 ml-12 text-xs text-slate-500">
+                        システム
+                      </p>
+                      <div className="flex gap-2 justify-start">
+                        {/* アイコン表示 */}
+                        <Avatar className="h-8 w-8 shrink-0 border border-slate-300">
+                          <AvatarFallback className="bg-blue-50 text-blue-600 text-xs font-semibold">
+                            <Bot className="h-4 w-4" />
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="max-w-[75%] min-w-0">
+                          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                            <div className="space-y-3">
+                              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
+                                {linkifyText(japaneseText)}
+                              </p>
+                              {translationText && (
+                                <div className="border-t border-slate-300 pt-3 text-sm leading-relaxed text-slate-600">
+                                  <p className="whitespace-pre-wrap break-words">
+                                    {linkifyText(translationText)}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                            <p className="mt-2 text-[10px] text-slate-400">
+                              {new Date(message.createdAt).toLocaleTimeString("ja-JP", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
+                          </div>
+
+                          {/* Yes/Noボタン */}
+                          {showYesNoButtons && (
+                            <div className="mt-2 flex gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 bg-white hover:bg-green-50 border-green-500 text-green-700"
+                                onClick={() => {
+                                  onComposerChange("はい、病院に行きたいです")
+                                  // 自動的に送信
+                                  setTimeout(() => {
+                                    const form = document.querySelector('form[data-message-form="true"]') as HTMLFormElement
+                                    if (form) form.requestSubmit()
+                                  }, 100)
+                                }}
+                              >
+                                {yesLabel}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 bg-white hover:bg-red-50 border-red-500 text-red-700"
+                                onClick={() => {
+                                  onComposerChange("いいえ、大丈夫です")
+                                  // 自動的に送信
+                                  setTimeout(() => {
+                                    const form = document.querySelector('form[data-message-form="true"]') as HTMLFormElement
+                                    if (form) form.requestSubmit()
+                                  }, 100)
+                                }}
+                              >
+                                {noLabel}
+                              </Button>
+                            </div>
+                          )}
+
+
+                          {/* 医療機関カードの表示 */}
+                          {medicalFacilities && medicalFacilities.length > 0 && (
+                            <div className="mt-2">
+                              <MedicalFacilitiesList
+                                facilities={medicalFacilities}
+                                title="近隣の医療機関"
+                              />
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )
@@ -1618,11 +2100,94 @@ function ChatView({
                     )}
                   </div>
                 )
-              })
+              })}
+
+                {/* システムメッセージ生成中インジケータ */}
+                {conversation?.healthConsultationState &&
+                 conversation.healthConsultationState !== "COMPLETED" &&
+                 !sending &&
+                 messages.length > 0 &&
+                 messages[messages.length - 1].type !== "SYSTEM" && (
+                  <div>
+                    <p className="mb-1 ml-12 text-xs text-slate-500">
+                      システム
+                    </p>
+                    <div className="flex gap-2 justify-start">
+                      <Avatar className="h-8 w-8 shrink-0 border border-slate-300">
+                        <AvatarFallback className="bg-blue-50 text-blue-600 text-xs font-semibold">
+                          <Bot className="h-4 w-4 animate-pulse" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="max-w-[75%] min-w-0">
+                        <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                          <p className="text-sm text-slate-600">メッセージを生成中です...</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
-          <div className="border-t bg-white px-6 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
-            <form onSubmit={onSend} className="space-y-3" data-compliance-bypass={!!complianceAlert ? "false" : "true"}>
+
+          {/* 新着メッセージ通知ボタン */}
+          {showNewMessageAlert && (
+            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-10 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <button
+                onClick={onScrollToBottom}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg transition-colors"
+              >
+                <span className="text-sm font-medium">新着メッセージ</span>
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                  />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t bg-white px-6 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+            {/* 健康相談フロー中のキャンセルボタン */}
+            {conversation?.healthConsultationState && conversation.healthConsultationState !== "COMPLETED" && (
+              <div className="mb-3 flex items-center justify-between rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-amber-600" />
+                  <p className="text-sm text-amber-800">
+                    {conversation.worker.locale === 'vi'
+                      ? 'Đang tư vấn y tế...'
+                      : '医療相談中...'}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="bg-white hover:bg-red-50 border-red-300 text-red-700"
+                  onClick={() => {
+                    onComposerChange(conversation.worker.locale === 'vi'
+                      ? 'Tôi muốn dừng tư vấn y tế'
+                      : '医療相談を中止します')
+                    setTimeout(() => {
+                      const form = document.querySelector('form[data-message-form="true"]') as HTMLFormElement
+                      if (form) form.requestSubmit()
+                    }, 100)
+                  }}
+                >
+                  {conversation.worker.locale === 'vi' ? 'Hủy' : 'キャンセル'}
+                </Button>
+              </div>
+            )}
+            <form onSubmit={onSend} className="space-y-3" data-compliance-bypass={!!complianceAlert ? "false" : "true"} data-message-form="true">
               <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end">
                 <Textarea
                   placeholder={messagePlaceholder}
@@ -1738,6 +2303,7 @@ function ManagerInsightsPanel({
   const contactEmail = contact?.email ?? "未登録"
   const contactPhone = "未登録"
   const contactAddress = conversation ? conversation.group.name : "未登録"
+  const artifact = consultation?.llmArtifact
 
   return (
     <aside className="hidden h-full min-h-0 w-full overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex md:resize-x" style={{ minWidth: '320px', maxWidth: '80vw' }}>
@@ -1745,7 +2311,7 @@ function ManagerInsightsPanel({
         <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-800">AI返信</h2>
-            {conversation ? (
+            {conversation && !(artifact?.extra && typeof artifact.extra === 'object' && 'healthConsultationInProgress' in artifact.extra && artifact.extra.healthConsultationInProgress) ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -1763,9 +2329,23 @@ function ManagerInsightsPanel({
           <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
             {suggestions.length === 0 ? (
               <div className="text-center py-8">
-                <p className="text-xs text-muted-foreground mb-4">
-                  {conversation ? "「生成」ボタンをクリックして初回メッセージを生成できます。" : "会話を選択してください。"}
-                </p>
+                {artifact?.extra && typeof artifact.extra === 'object' && 'healthConsultationInProgress' in artifact.extra && artifact.extra.healthConsultationInProgress ? (
+                  <>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      🏥 健康相談対応中
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      システムが自動で対応しています。
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      必要に応じてマネージャーからもメッセージを送信できます。
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground mb-4">
+                    {conversation ? "「生成」ボタンをクリックして初回メッセージを生成できます。" : "会話を選択してください。"}
+                  </p>
+                )}
               </div>
             ) : (
               suggestions.map((suggestion, index) => {

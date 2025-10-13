@@ -67,7 +67,7 @@ const segmentModel = env.GOOGLE_SEGMENT_API_KEY
   ? new GoogleGenerativeAI(env.GOOGLE_SEGMENT_API_KEY).getGenerativeModel({ model: SEGMENT_MODEL })
   : null
 
-const HEALTH_CONSULTATION_MODEL = "gemini-2.5-flash"
+const HEALTH_CONSULTATION_MODEL = "gemini-2.5-flash-lite" // Lite版で高速化
 const healthConsultationModel = env.GOOGLE_SUGGEST_API_KEY
   ? new GoogleGenerativeAI(env.GOOGLE_SUGGEST_API_KEY).getGenerativeModel({
       model: HEALTH_CONSULTATION_MODEL,
@@ -144,9 +144,14 @@ async function safeGenerateText(model: ReturnType<GoogleGenerativeAI["getGenerat
 export async function translateMessage(
   request: TranslationRequest,
 ): Promise<TranslationResult> {
+  const startTime = Date.now()
+  console.log(`[llm] translate: Starting ${request.sourceLanguage} -> ${request.targetLanguage} (${request.content.length} chars)`)
+
   // キャッシュをチェック
   const cachedTranslation = getCachedTranslation(request.content, request.sourceLanguage, request.targetLanguage)
   if (cachedTranslation) {
+    const duration = Date.now() - startTime
+    console.log(`[llm] translate: Cache hit (${duration}ms)`)
     return {
       translation: cachedTranslation,
       provider: "google-ai-studio",
@@ -209,7 +214,8 @@ export async function translateMessage(
   // キャッシュに保存
   setCachedTranslation(request.content, request.sourceLanguage, request.targetLanguage, output)
 
-  console.log(`[llm] Translation successful: ${request.sourceLanguage} -> ${request.targetLanguage}`)
+  const duration = Date.now() - startTime
+  console.log(`[llm] translate: Success ${request.sourceLanguage} -> ${request.targetLanguage} (${duration}ms)`)
   return {
     translation: output,
     provider: "google-ai-studio",
@@ -621,46 +627,119 @@ export async function enrichMessageWithLLM(params: {
     normalizedManagerLocale &&
     normalizedWorkerLocale !== normalizedManagerLocale
 
-  const [translation, suggestions] = await Promise.all([
-    params.content
-      ? translateMessage({
-          content: params.content,
-          sourceLanguage: params.language,
-          targetLanguage: params.targetLanguage,
-        })
-      : Promise.resolve(undefined as TranslationResult | undefined),
-    // 初回メッセージの場合は、会話履歴なしで生成
-    params.isInitialMessage && params.workerInfo
-      ? generateSuggestedReplies({
-          conversationHistory: [],
-          workerInfo: params.workerInfo,
-          groupInfo: params.groupInfo,
-          language: suggestionLanguage,
-          persona: "manager",
-          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
-          daysSinceLastWorkerMessage: 0,
-        } as EnhancedSuggestionRequest)
-      : params.conversationHistory && params.workerInfo
-      ? generateSuggestedReplies({
-          conversationHistory: params.conversationHistory,
-          workerInfo: params.workerInfo,
-          groupInfo: params.groupInfo,
-          language: suggestionLanguage,
-          persona: "manager",
-          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
-          daysSinceLastWorkerMessage: params.daysSinceLastWorkerMessage,
-        } as EnhancedSuggestionRequest)
-      : generateSuggestedReplies({
-          transcript: params.content,
-          language: suggestionLanguage,
-          persona: "agent",
-          targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
-        }),
-  ])
+  // まず翻訳を先に実行（ユーザーに即座に表示するため）
+  const translation = params.content && params.language !== params.targetLanguage
+    ? await translateMessage({
+        content: params.content,
+        sourceLanguage: params.language,
+        targetLanguage: params.targetLanguage,
+      })
+    : undefined
+
+  // 翻訳完了後にAI提案を生成（バックグラウンド処理として）
+  const suggestions = params.isInitialMessage && params.workerInfo
+    ? await generateSuggestedReplies({
+        conversationHistory: [],
+        workerInfo: params.workerInfo,
+        groupInfo: params.groupInfo,
+        language: suggestionLanguage,
+        persona: "manager",
+        targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+        daysSinceLastWorkerMessage: 0,
+      } as EnhancedSuggestionRequest)
+    : params.conversationHistory && params.workerInfo
+    ? await generateSuggestedReplies({
+        conversationHistory: params.conversationHistory,
+        workerInfo: params.workerInfo,
+        groupInfo: params.groupInfo,
+        language: suggestionLanguage,
+        persona: "manager",
+        targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+        daysSinceLastWorkerMessage: params.daysSinceLastWorkerMessage,
+      } as EnhancedSuggestionRequest)
+    : await generateSuggestedReplies({
+        transcript: params.content,
+        language: suggestionLanguage,
+        persona: "agent",
+        targetTranslationLanguage: shouldTranslateSuggestions ? normalizedWorkerLocale : undefined,
+      })
 
   return {
     translation,
     suggestions,
+  }
+}
+
+/**
+ * ワーカーの返信が受診希望かどうかを判定
+ */
+export async function analyzeConsultationIntent(params: {
+  workerMessage: string
+  conversationHistory: Array<{
+    body: string
+    senderRole: string
+  }>
+}): Promise<{
+  wantsConsultation: boolean
+  preferredDate?: string // "today" | "tomorrow" | "this_week" | "specific_date"
+  specificDate?: string // "2025-01-15"のような形式
+  timePreference?: string // "morning" | "afternoon" | "evening"
+}> {
+  if (!healthConsultationModel) {
+    console.log("[llm] Health consultation model not configured")
+    return { wantsConsultation: false }
+  }
+
+  const transcript = params.conversationHistory.slice(-3)
+    .map((msg) => {
+      const role = msg.senderRole === "MEMBER" ? "メンバー" : "システム"
+      return `${role}: ${msg.body}`
+    })
+    .join("\n")
+
+  const prompt =
+    `以下の会話履歴と最新のメンバーの返信を見て、メンバーが医療機関への受診を希望しているかを判定してください。\n\n` +
+    `会話履歴:\n${transcript}\n\n` +
+    `最新のメンバーの返信: ${params.workerMessage}\n\n` +
+    `以下のJSON形式で回答してください:\n` +
+    `{\n` +
+    `  "wantsConsultation": boolean,\n` +
+    `  "preferredDate": "today" | "tomorrow" | "this_week" | "specific_date" | null,\n` +
+    `  "specificDate": "YYYY-MM-DD" | null,\n` +
+    `  "timePreference": "morning" | "afternoon" | "evening" | null\n` +
+    `}\n\n` +
+    `判定基準:\n` +
+    `- wantsConsultation: 以下の場合true\n` +
+    `  ・「はい」「お願いします」「受診したい」「病院に行きたい」「行きたい」「行きます」などの明確な肯定\n` +
+    `  ・「大丈夫です」という返答も、文脈上（体調不良で病院受診を提案されている場合）は肯定の意図と判断\n` +
+    `- wantsConsultation: 以下の場合false\n` +
+    `  ・「いいえ」「要らない」「必要ない」「平気です」「今はいい」などの明確な否定\n` +
+    `- preferredDate: 「今日」「明日」「今週中」などの希望があれば該当する値を、具体的な日付があれば"specific_date"を\n` +
+    `- specificDate: "1月15日"のような具体的な日付があればYYYY-MM-DD形式で\n` +
+    `- timePreference: 「午前」「午後」「夕方」などの時間帯の希望があれば該当する値を`
+
+  const output = await safeGenerateText(healthConsultationModel, prompt, "consultation-intent-analysis")
+
+  if (!output) {
+    console.log("[llm] Failed to analyze consultation intent")
+    return { wantsConsultation: false }
+  }
+
+  try {
+    // マークダウンコードブロックを削除
+    let cleanedOutput = output.trim()
+    const codeBlockMatch = cleanedOutput.match(/^```(?:json)?\n?([\s\S]*?)\n?```$/)
+    if (codeBlockMatch) {
+      cleanedOutput = codeBlockMatch[1].trim()
+    }
+
+    const result = JSON.parse(cleanedOutput)
+    console.log("[llm] Consultation intent analysis:", result)
+    return result
+  } catch (error) {
+    console.error("[llm] Failed to parse consultation intent:", error)
+    console.error("[llm] Raw output:", output)
+    return { wantsConsultation: false }
   }
 }
 
@@ -798,7 +877,9 @@ export async function analyzeHealthConsultation(params: {
     return { isHealthRelated: false }
   }
 
-  const transcript = params.conversationHistory
+  // 最新5メッセージのみを使用（高速化のため）
+  const recentMessages = params.conversationHistory.slice(-5)
+  const transcript = recentMessages
     .map((msg) => {
       const role = msg.senderRole === "MEMBER" ? "メンバー" : "マネージャー"
       return `${role}: ${msg.body}`
@@ -826,7 +907,9 @@ export async function analyzeHealthConsultation(params: {
     `- needsMedicalFacility: メンバーが病院を探している、または病院が必要な状況ならtrue\n` +
     `- hasAddress: メンバーの住所が登録されているかどうか\n` +
     `- injuryContext: 怪我の場合、仕事中か否か等の経緯(労災判定に必要)\n` +
-    `- suggestedQuestions: まだ聞いていない重要な情報(症状の詳細、いつ病院に行きたいか、怪我の経緯など)があれば、質問を提案`
+    `- suggestedQuestions: まだ聞いていない重要な情報を、自然な話し言葉で1〜3個質問してください。\n` +
+    `  例：「いつ頃から痛いですか？」「どんな痛みですか？」「熱はありますか？」\n` +
+    `  注意：箇条書きの番号や記号は不要です。質問文のみを配列に入れてください。`
 
   const output = await safeGenerateText(healthConsultationModel, prompt, "health-consultation-analysis")
 
@@ -836,11 +919,19 @@ export async function analyzeHealthConsultation(params: {
   }
 
   try {
-    const analysis = JSON.parse(output) as HealthConsultationAnalysis
+    // マークダウンコードブロックを削除（```json...```や```...```）
+    let cleanedOutput = output.trim()
+    const codeBlockMatch = cleanedOutput.match(/^```(?:json)?\n?([\s\S]*?)\n?```$/)
+    if (codeBlockMatch) {
+      cleanedOutput = codeBlockMatch[1].trim()
+    }
+
+    const analysis = JSON.parse(cleanedOutput) as HealthConsultationAnalysis
     console.log("[llm] Health consultation analysis:", analysis)
     return analysis
   } catch (error) {
     console.error("[llm] Failed to parse health consultation analysis:", error)
+    console.error("[llm] Raw output:", output)
     return { isHealthRelated: false }
   }
 }

@@ -58,8 +58,10 @@ export async function searchMedicalFacilities(
   const apiKey = env.GOOGLE_PLACES_API_KEY
 
   if (!apiKey) {
-    console.error("[medical] GOOGLE_PLACES_API_KEY not configured")
-    throw new Error("医療機関検索機能が設定されていません")
+    console.warn("[medical] GOOGLE_PLACES_API_KEY not configured - medical facility search is disabled")
+    console.warn("[medical] To enable this feature, set GOOGLE_PLACES_API_KEY in your .env file")
+    // API キーが設定されていない場合は空の配列を返す（エラーにしない）
+    return []
   }
 
   try {

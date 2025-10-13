@@ -33,6 +33,9 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
       user: { id: session.user.id, role: session.user.role },
     })
 
+    const messagesWithTranslation = conversation.messages.filter(m => m.llmArtifact?.translation).length
+    console.log(`[API] GET /conversations/${conversationId}/messages - ${conversation.messages.length} messages, ${messagesWithTranslation} with translation`)
+
     return NextResponse.json({ conversation })
   } catch (error) {
     console.error("Failed to load conversation:", {
@@ -82,6 +85,8 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   }
 
   try {
+    console.log(`[API] POST /conversations/${conversationId}/messages - User: ${session.user.id}, Body length: ${parsed.data.body.length}`)
+
     const message = await appendMessage({
       conversationId,
       user: { id: session.user.id, role: session.user.role, locale: session.user.locale },
@@ -89,6 +94,17 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       language: parsed.data.language,
       type: parsed.data.type,
     })
+
+    console.log(`[API] Message created successfully. ID: ${message.id}, Has llmArtifact: ${!!message.llmArtifact}`)
+
+    // WebSocketでリアルタイム通知
+    if (global.io) {
+      global.io.to(`conversation-${conversationId}`).emit('new-message', {
+        conversationId,
+        message
+      })
+      console.log(`[WebSocket] Broadcasted new message to conversation-${conversationId}`)
+    }
 
     return NextResponse.json({ message })
   } catch (error) {
