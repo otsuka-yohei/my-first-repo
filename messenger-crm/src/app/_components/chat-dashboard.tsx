@@ -581,9 +581,15 @@ function ManagerChatDashboard({
       const data = await readJson<{ message: MessageItem }>(res)
 
       // 楽観的メッセージを実際のメッセージで置き換え
-      setMessages((current) =>
-        current.map((msg) => (msg.id === optimisticMessage.id ? data.message : msg))
-      )
+      setMessages((current) => {
+        // 重複チェック：実際のメッセージが既に存在する場合は楽観的メッセージのみ削除
+        const hasRealMessage = current.some(m => m.id === data.message.id && m.id !== optimisticMessage.id)
+        if (hasRealMessage) {
+          console.log('[send] Real message already exists (from WebSocket), removing optimistic message')
+          return current.filter(msg => msg.id !== optimisticMessage.id)
+        }
+        return current.map((msg) => (msg.id === optimisticMessage.id ? data.message : msg))
+      })
 
       setConversations((current) =>
         current.map((conversation) =>
@@ -597,13 +603,8 @@ function ManagerChatDashboard({
         ),
       )
 
-      // 翻訳が完了するまでポーリング（バックグラウンド処理の完了を待つ）
-      if (data.message.id) {
-        console.log(`[send] Message sent successfully. ID: ${data.message.id}, starting polling...`)
-        void pollForTranslation(data.message.id, selectedConversationId)
-      } else {
-        console.warn("[send] Message sent but no ID returned")
-      }
+      // WebSocketで翻訳とAI提案の完了を待つ（message-updatedイベントで自動的に更新される）
+      console.log(`[send] Message sent successfully. ID: ${data.message.id}, waiting for WebSocket updates...`)
 
       // AI提案を使用した場合、ログを記録
       if (usedSuggestion) {
@@ -714,61 +715,6 @@ function ManagerChatDashboard({
       return { ...previous, [conversationId]: [...current, trimmed] }
     })
   }
-
-  // 翻訳完了をポーリングする関数
-  const pollForTranslation = useCallback(async (messageId: string, conversationId: string) => {
-    console.log(`[poll] Starting translation polling for message ${messageId}`)
-    const maxAttempts = 10 // 最大10回試行（約3秒）
-    const pollInterval = 300 // 300msごとにチェック
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        // 最初の試行は待たずにすぐチェック、2回目以降は待機
-        if (attempt > 0) {
-          await new Promise((resolve) => setTimeout(resolve, pollInterval))
-        }
-
-        console.log(`[poll] Attempt ${attempt + 1}/${maxAttempts} - fetching conversation ${conversationId}`)
-
-        // 会話全体を再取得
-        const res = await fetch(`/api/conversations/${conversationId}/messages`, {
-          method: "GET",
-          cache: "no-store",
-        })
-
-        if (!res.ok) {
-          console.warn(`[poll] Fetch failed with status ${res.status}`)
-          continue
-        }
-
-        const data = await readJson<{
-          conversation: ConversationDetail & { messages: MessageItem[] }
-        }>(res)
-
-        // 該当メッセージを探す
-        const updatedMessage = data.conversation.messages.find((msg) => msg.id === messageId)
-
-        if (updatedMessage) {
-          console.log(`[poll] Message found. Has translation: ${!!updatedMessage.llmArtifact?.translation}`)
-        } else {
-          console.warn(`[poll] Message ${messageId} not found in conversation`)
-        }
-
-        if (updatedMessage?.llmArtifact?.translation) {
-          // 翻訳が完了している場合、メッセージを更新
-          console.log(`[poll] ✅ Translation completed for message ${messageId} after ${attempt + 1} attempts`)
-          setMessages((current) =>
-            current.map((msg) => (msg.id === messageId ? updatedMessage : msg))
-          )
-          return // 成功したら終了
-        }
-      } catch (error) {
-        console.error("[poll] Failed to fetch translation:", error)
-      }
-    }
-
-    console.warn(`[poll] ⏱️ Translation polling timeout for message ${messageId} after ${maxAttempts} attempts`)
-  }, [])
 
   const handleRegenerateSuggestions = useCallback(async () => {
     if (!selectedConversationId) return
@@ -935,7 +881,7 @@ function ManagerChatDashboard({
     return () => container.removeEventListener('scroll', handleScroll)
   }, [showNewMessageAlert])
 
-  // WebSocketリスナー（新しいメッセージの受信用）
+  // WebSocketリスナー（新しいメッセージの受信用と更新用）
   useEffect(() => {
     if (!selectedConversationId) return
 
@@ -946,7 +892,7 @@ function ManagerChatDashboard({
 
     // 新しいメッセージを受信
     const handleNewMessage = ({ message }: { conversationId: string; message: MessageItem }) => {
-      console.log('[WebSocket] Received new message', message.id)
+      console.log('[WebSocket] Received new message', message.id, 'metadata:', message.metadata)
       setMessages(prev => {
         // 重複チェック（楽観的UIで既に表示されている場合がある）
         if (prev.some(m => m.id === message.id)) {
@@ -955,13 +901,49 @@ function ManagerChatDashboard({
         }
         return [...prev, message]
       })
+
+      // メッセージのmetadataにhealthConsultationStateが含まれている場合、conversationも更新
+      const metadata = message.metadata as { healthConsultationState?: string } | null
+      console.log('[WebSocket] Checking metadata for healthConsultationState:', metadata)
+      if (metadata?.healthConsultationState) {
+        console.log('[WebSocket] Updating conversation healthConsultationState:', metadata.healthConsultationState)
+        setConversation(prev => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            healthConsultationState: metadata.healthConsultationState as string | null,
+          }
+        })
+      } else {
+        console.log('[WebSocket] No healthConsultationState in metadata')
+      }
+    }
+
+    // メッセージ更新を受信（翻訳やAI提案の完了時）
+    const handleMessageUpdated = ({ message }: { conversationId: string; message: MessageItem }) => {
+      console.log('[WebSocket] Received message update', message.id)
+      setMessages(prev => {
+        // 既存のメッセージを更新
+        const index = prev.findIndex(m => m.id === message.id)
+        if (index !== -1) {
+          const updated = [...prev]
+          updated[index] = message
+          console.log('[WebSocket] Message updated with translation/suggestions')
+          return updated
+        }
+        // メッセージが見つからない場合は追加（稀なケース）
+        console.log('[WebSocket] Message not found, adding as new')
+        return [...prev, message]
+      })
     }
 
     socket.on('new-message', handleNewMessage)
+    socket.on('message-updated', handleMessageUpdated)
 
     return () => {
       socket.emit('leave-conversation', selectedConversationId)
       socket.off('new-message', handleNewMessage)
+      socket.off('message-updated', handleMessageUpdated)
     }
   }, [selectedConversationId])
 
@@ -1281,36 +1263,6 @@ function WorkerChatDashboard({
     }
   }, [selectedConversationId])
 
-  // WebSocketリスナー（新しいメッセージの受信用）
-  useEffect(() => {
-    if (!selectedConversationId) return
-
-    const socket = getSocket()
-
-    // 会話ルームに参加
-    socket.emit('join-conversation', selectedConversationId)
-
-    // 新しいメッセージを受信
-    const handleNewMessage = ({ message }: { conversationId: string; message: MessageItem }) => {
-      console.log('[WebSocket] Received new message', message.id)
-      setMessages(prev => {
-        // 重複チェック（楽観的UIで既に表示されている場合がある）
-        if (prev.some(m => m.id === message.id)) {
-          console.log('[WebSocket] Message already exists, skipping')
-          return prev
-        }
-        return [...prev, message]
-      })
-    }
-
-    socket.on('new-message', handleNewMessage)
-
-    return () => {
-      socket.emit('leave-conversation', selectedConversationId)
-      socket.off('new-message', handleNewMessage)
-    }
-  }, [selectedConversationId])
-
   useEffect(() => {
     const container = messagesRef.current
     if (!container) return
@@ -1371,6 +1323,74 @@ function WorkerChatDashboard({
     container.addEventListener('scroll', handleScroll)
     return () => container.removeEventListener('scroll', handleScroll)
   }, [showNewMessageAlert])
+
+  // WebSocketリスナー（新しいメッセージの受信用と更新用）
+  useEffect(() => {
+    if (!selectedConversationId) return
+    // プレースホルダーIDの場合はWebSocket接続しない
+    if (selectedConversationId.startsWith("placeholder-")) return
+
+    const socket = getSocket()
+
+    // 会話ルームに参加
+    socket.emit('join-conversation', selectedConversationId)
+
+    // 新しいメッセージを受信
+    const handleNewMessage = ({ message }: { conversationId: string; message: MessageItem }) => {
+      console.log('[WebSocket] Received new message', message.id, 'metadata:', message.metadata)
+      setMessages(prev => {
+        // 重複チェック（楽観的UIで既に表示されている場合がある）
+        if (prev.some(m => m.id === message.id)) {
+          console.log('[WebSocket] Message already exists, skipping')
+          return prev
+        }
+        return [...prev, message]
+      })
+
+      // メッセージのmetadataにhealthConsultationStateが含まれている場合、conversationも更新
+      const metadata = message.metadata as { healthConsultationState?: string } | null
+      console.log('[WebSocket] Checking metadata for healthConsultationState:', metadata)
+      if (metadata?.healthConsultationState) {
+        console.log('[WebSocket] Updating conversation healthConsultationState:', metadata.healthConsultationState)
+        setConversation(prev => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            healthConsultationState: metadata.healthConsultationState as string | null,
+          }
+        })
+      } else {
+        console.log('[WebSocket] No healthConsultationState in metadata')
+      }
+    }
+
+    // メッセージ更新を受信（翻訳やAI提案の完了時）
+    const handleMessageUpdated = ({ message }: { conversationId: string; message: MessageItem }) => {
+      console.log('[WebSocket] Received message update', message.id)
+      setMessages(prev => {
+        // 既存のメッセージを更新
+        const index = prev.findIndex(m => m.id === message.id)
+        if (index !== -1) {
+          const updated = [...prev]
+          updated[index] = message
+          console.log('[WebSocket] Message updated with translation/suggestions')
+          return updated
+        }
+        // メッセージが見つからない場合は追加（稀なケース）
+        console.log('[WebSocket] Message not found, adding as new')
+        return [...prev, message]
+      })
+    }
+
+    socket.on('new-message', handleNewMessage)
+    socket.on('message-updated', handleMessageUpdated)
+
+    return () => {
+      socket.emit('leave-conversation', selectedConversationId)
+      socket.off('new-message', handleNewMessage)
+      socket.off('message-updated', handleMessageUpdated)
+    }
+  }, [selectedConversationId])
 
   // 新着メッセージボタンクリック時のスクロール処理
   const scrollToBottom = () => {
@@ -1436,61 +1456,6 @@ function WorkerChatDashboard({
     }
   }
 
-  // 翻訳完了をポーリングする関数（ワーカー用）
-  const pollForWorkerTranslation = useCallback(async (messageId: string, conversationId: string) => {
-    console.log(`[poll-worker] Starting translation polling for message ${messageId}`)
-    const maxAttempts = 10 // 最大10回試行（約3秒）
-    const pollInterval = 300 // 300msごとにチェック
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        // 最初の試行は待たずにすぐチェック、2回目以降は待機
-        if (attempt > 0) {
-          await new Promise((resolve) => setTimeout(resolve, pollInterval))
-        }
-
-        console.log(`[poll-worker] Attempt ${attempt + 1}/${maxAttempts} - fetching conversation ${conversationId}`)
-
-        // 会話全体を再取得
-        const res = await fetch(`/api/conversations/${conversationId}/messages`, {
-          method: "GET",
-          cache: "no-store",
-        })
-
-        if (!res.ok) {
-          console.warn(`[poll-worker] Fetch failed with status ${res.status}`)
-          continue
-        }
-
-        const data = await readJson<{
-          conversation: ConversationDetail & { messages: MessageItem[] }
-        }>(res)
-
-        // 該当メッセージを探す
-        const updatedMessage = data.conversation.messages.find((msg) => msg.id === messageId)
-
-        if (updatedMessage) {
-          console.log(`[poll-worker] Message found. Has translation: ${!!updatedMessage.llmArtifact?.translation}`)
-        } else {
-          console.warn(`[poll-worker] Message ${messageId} not found in conversation`)
-        }
-
-        if (updatedMessage?.llmArtifact?.translation) {
-          // 翻訳が完了している場合、メッセージを更新
-          console.log(`[poll-worker] ✅ Translation completed for message ${messageId} after ${attempt + 1} attempts`)
-          setMessages((current) =>
-            current.map((msg) => (msg.id === messageId ? updatedMessage : msg))
-          )
-          return // 成功したら終了
-        }
-      } catch (error) {
-        console.error("[poll-worker] Failed to fetch translation:", error)
-      }
-    }
-
-    console.warn(`[poll-worker] ⏱️ Translation polling timeout for message ${messageId} after ${maxAttempts} attempts`)
-  }, [])
-
   async function handleSelectGroup(group: { id: string; name: string }) {
     console.log(`[worker-chat] handleSelectGroup called with group:`, group)
     setSelectedGroup(group)
@@ -1551,7 +1516,14 @@ function WorkerChatDashboard({
       }
 
       const data = await readJson<{ message: MessageItem }>(res)
-      setMessages((current) => [...current, data.message])
+      setMessages((current) => {
+        // 重複チェック（WebSocketで既に追加されている場合がある）
+        if (current.some(m => m.id === data.message.id)) {
+          console.log('[send-worker] Message already exists, skipping')
+          return current
+        }
+        return [...current, data.message]
+      })
       setComposer("")
       setConversations((current) =>
         current.map((conversation) =>
@@ -1565,13 +1537,8 @@ function WorkerChatDashboard({
         ),
       )
 
-      // 翻訳が完了するまでポーリング（バックグラウンド処理の完了を待つ）
-      if (data.message.id) {
-        console.log(`[send-worker] Message sent successfully. ID: ${data.message.id}, starting polling...`)
-        void pollForWorkerTranslation(data.message.id, conversationId)
-      } else {
-        console.warn("[send-worker] Message sent but no ID returned")
-      }
+      // WebSocketで翻訳とAI提案の完了を待つ（message-updatedイベントで自動的に更新される）
+      console.log(`[send-worker] Message sent successfully. ID: ${data.message.id}, waiting for WebSocket updates...`)
     } catch (err) {
       console.error(err)
       setSendError("メッセージの送信に失敗しました。")
@@ -1911,7 +1878,7 @@ function ChatView({
               </div>
             ) : (
               <>
-                {messages.map((message) => {
+                {messages.map((message, index) => {
                 const isSystemMessage = message.type === "SYSTEM"
                 const translation = message.llmArtifact?.translation?.trim()
                 const medicalFacilities = message.metadata?.facilities || message.llmArtifact?.extra?.medicalFacilities
@@ -1939,7 +1906,7 @@ function ChatView({
                   const noLabel = conversation?.worker.locale === 'vi' ? 'Không' : 'いいえ'
 
                   return (
-                    <div key={message.id}>
+                    <div key={`${message.id}-${index}`}>
                       {/* 送信者名表示 */}
                       <p className="mb-1 ml-12 text-xs text-slate-500">
                         システム
@@ -2032,7 +1999,7 @@ function ChatView({
                 const showSenderName = !isOwnMessage
 
                 return (
-                  <div key={message.id}>
+                  <div key={`${message.id}-${index}`}>
                     {/* LINE風の送信者名表示（相手のメッセージの場合） */}
                     {showSenderName && (
                       <p className="mb-1 ml-12 text-xs text-slate-500">

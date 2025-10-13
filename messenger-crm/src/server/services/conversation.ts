@@ -344,8 +344,18 @@ async function handleHealthConsultationFlow(
 
   // キャンセルメッセージの検出（最優先で処理）
   if (latestWorkerMessage && currentState && currentState !== "COMPLETED") {
-    const cancelKeywords = ['医療相談を中止', '中止します', 'キャンセル', 'やめます', 'Tôi muốn dừng tư vấn y tế', 'Hủy', 'Dừng']
-    const isCancelled = cancelKeywords.some(keyword => latestWorkerMessage.body.includes(keyword))
+    // より厳格なキャンセル判定: メッセージ全体がキャンセルの意図であることを確認
+    const cancelKeywords = ['医療相談を中止', '中止します', 'キャンセル', 'やめます', 'Tôi muốn dừng tư vấn y tế', 'Hủy bỏ tư vấn', 'Dừng tư vấn']
+    const messageLower = latestWorkerMessage.body.toLowerCase().trim()
+    const isCancelled = cancelKeywords.some(keyword => {
+      const keywordLower = keyword.toLowerCase()
+      // キーワードが単独で、または文の主要部分として存在するか確認
+      return messageLower === keywordLower ||
+             messageLower.startsWith(keywordLower) ||
+             messageLower.endsWith(keywordLower) ||
+             messageLower.includes(keywordLower + '。') ||
+             messageLower.includes(keywordLower + '、')
+    })
 
     if (isCancelled) {
       console.log("[health-consultation] User requested cancellation")
@@ -368,21 +378,22 @@ async function handleHealthConsultationFlow(
         vi: "承知しました。医療相談を中止します。\n\nまた何かございましたら、いつでもお知らせください。\n\n---TRANSLATION---\n\nĐã hiểu. Tôi sẽ dừng tư vấn y tế.\n\nNếu có gì, hãy cho tôi biết bất cứ lúc nào.",
       }
 
-      await sendSystemMessage({
-        conversationId,
-        body: cancelMessages[workerLocale] || cancelMessages.ja,
-        metadata: {
-          type: "health_consultation_cancelled",
-        },
-        skipTranslation: true, // 事前翻訳済みのため翻訳をスキップ
-      })
-
-      // ステート更新: COMPLETED
+      // ステート更新: COMPLETED（メッセージ送信前に実行）
       await prisma.conversation.update({
         where: { id: conversationId },
         data: {
           healthConsultationState: "COMPLETED",
         },
+      })
+
+      await sendSystemMessage({
+        conversationId,
+        body: cancelMessages[workerLocale] || cancelMessages.ja,
+        metadata: {
+          type: "health_consultation_cancelled",
+          healthConsultationState: "COMPLETED", // フロントエンド更新用
+        },
+        skipTranslation: true, // 事前翻訳済みのため翻訳をスキップ
       })
 
       return true
@@ -466,7 +477,20 @@ async function handleHealthConsultationFlow(
         },
       })
 
-      return true
+      // 即座に医療機関検索を実行
+      console.log("[health-consultation] Immediately executing facility search after schedule update")
+      const updatedAnalysis = {
+        ...healthAnalysis,
+        intentAnalysis,
+      }
+      return handleHealthConsultationFlow(
+        conversationId,
+        updatedAnalysis as Awaited<ReturnType<typeof analyzeHealthConsultation>>,
+        "PROVIDING_FACILITIES",
+        workerAddress,
+        latestWorkerMessage,
+        conversationHistory,
+      )
     } else {
       // 日時情報が不明確
       await sendSystemMessage({
@@ -546,6 +570,31 @@ async function handleHealthConsultationFlow(
           intentAnalysis,
         },
       })
+
+      // PROVIDING_FACILITIESステートに遷移した場合は、即座に医療機関検索を実行
+      if (intentAnalysis.preferredDate || intentAnalysis.timePreference) {
+        // 再帰呼び出しで医療機関検索処理を実行
+        console.log("[health-consultation] Immediately executing facility search after schedule confirmation")
+        const updatedConversation = await prisma.conversation.findUnique({
+          where: { id: conversationId },
+        })
+        if (updatedConversation?.healthConsultationState === "PROVIDING_FACILITIES") {
+          // データベースから最新のhealthConsultationDataを取得して使用
+          const storedData = updatedConversation.healthConsultationData as Record<string, unknown> | null
+          const updatedAnalysis = storedData || {
+            ...healthAnalysis,
+            intentAnalysis,
+          }
+          return handleHealthConsultationFlow(
+            conversationId,
+            updatedAnalysis as Awaited<ReturnType<typeof analyzeHealthConsultation>>,
+            "PROVIDING_FACILITIES",
+            workerAddress,
+            latestWorkerMessage,
+            conversationHistory,
+          )
+        }
+      }
 
       return true
     } else {
@@ -704,11 +753,17 @@ async function handleHealthConsultationFlow(
           if (f.phoneNumber) {
             lines.push(`   📞 ${f.phoneNumber}`)
           }
-          if (f.openNow !== undefined) {
-            lines.push(`   ${f.openNow ? "✅ 現在営業中" : "⏰ 営業時間外"}`)
+          // openingHoursオブジェクトからopenNowを取得
+          const isOpen = f.openingHours?.openNow ?? f.openNow
+          if (isOpen !== undefined) {
+            lines.push(`   ${isOpen ? "✅ 現在営業中" : "⏰ 営業時間外"}`)
           }
           if (f.rating) {
             lines.push(`   ⭐ 評価: ${f.rating}/5.0`)
+          }
+          if (f.distanceMeters !== undefined) {
+            const distanceKm = (f.distanceMeters / 1000).toFixed(1)
+            lines.push(`   🚶 距離: ${distanceKm}km`)
           }
           if (f.acceptsForeigners) {
             lines.push(`   🌐 外国人対応可能`)
@@ -739,7 +794,16 @@ async function handleHealthConsultationFlow(
           },
         })
 
-        return true
+        // 即座に日本語例文を提供
+        console.log("[health-consultation] Immediately providing Japanese instructions after facilities")
+        return handleHealthConsultationFlow(
+          conversationId,
+          healthAnalysis,
+          "PROVIDING_INSTRUCTIONS",
+          workerAddress,
+          latestWorkerMessage,
+          conversationHistory,
+        )
       } else {
         // 医療機関が見つからなかった場合
         await sendSystemMessage({
@@ -867,6 +931,26 @@ async function sendSystemMessage(params: {
     })
 
     console.log(`[system-message] Created system message ${message.id}`)
+
+    // WebSocketで新しいシステムメッセージを配信
+    if (global.io) {
+      const messageWithDetails = await prisma.message.findUnique({
+        where: { id: message.id },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+          llmArtifact: true,
+        },
+      })
+      if (messageWithDetails) {
+        console.log(`[WebSocket] Broadcasting system message ${message.id} with metadata:`, messageWithDetails.metadata)
+        global.io.to(`conversation-${params.conversationId}`).emit('new-message', {
+          conversationId: params.conversationId,
+          message: messageWithDetails,
+        })
+        console.log(`[WebSocket] Broadcasted system message ${message.id}`)
+      }
+    }
+
     return message
   } catch (error) {
     console.error("[system-message] Failed to send system message:", error instanceof Error ? error.message : String(error))
@@ -985,6 +1069,24 @@ async function enrichMessageInBackground(
         },
       })
       console.log(`[background] Translation saved to DB for immediate display`)
+
+      // WebSocketで翻訳完了を通知
+      if (global.io) {
+        const updatedMessage = await prisma.message.findUnique({
+          where: { id: messageId },
+          include: {
+            sender: { select: { id: true, name: true, role: true } },
+            llmArtifact: true,
+          },
+        })
+        if (updatedMessage) {
+          global.io.to(`conversation-${conversationId}`).emit('message-updated', {
+            conversationId,
+            message: updatedMessage,
+          })
+          console.log(`[WebSocket] Broadcasted translation update for message ${messageId}`)
+        }
+      }
     }
 
     // フェーズ2: 健康相談の分析（翻訳の次に優先実行）
@@ -1126,6 +1228,24 @@ async function enrichMessageInBackground(
     const duration = Date.now() - startTime
     console.log(`[background] LLM enrichment completed for message ${messageId} in ${duration}ms`)
     console.log(`[background] Breakdown - Translation: ${translationDuration}ms, Total: ${duration}ms`)
+
+    // WebSocketでAI提案完了を通知
+    if (global.io) {
+      const finalMessage = await prisma.message.findUnique({
+        where: { id: messageId },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+          llmArtifact: true,
+        },
+      })
+      if (finalMessage) {
+        global.io.to(`conversation-${conversationId}`).emit('message-updated', {
+          conversationId,
+          message: finalMessage,
+        })
+        console.log(`[WebSocket] Broadcasted final update (with suggestions) for message ${messageId}`)
+      }
+    }
   } catch (error) {
     console.error(`[background] Failed to enrich message ${messageId}:`, error)
   }
