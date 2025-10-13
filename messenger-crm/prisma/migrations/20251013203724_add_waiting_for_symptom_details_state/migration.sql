@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "HealthConsultationState" ADD VALUE 'WAITING_FOR_SYMPTOM_DETAILS';
