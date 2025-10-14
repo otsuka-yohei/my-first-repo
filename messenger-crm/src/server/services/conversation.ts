@@ -2,7 +2,7 @@ import { MessageType, UserRole, Prisma, MembershipRole } from "@prisma/client"
 
 import { AuthorizationError, canAccessGroup } from "@/server/auth/permissions"
 import { prisma } from "@/server/db"
-import { enrichMessageWithLLM, segmentConversation, analyzeHealthConsultation, translateMessage, generateSuggestedReplies, analyzeConsultationIntent, type SuggestedReply, type EnhancedSuggestionRequest } from "@/server/llm/service"
+import { enrichMessageWithLLM, segmentConversation, analyzeHealthConsultation, translateMessage, generateSuggestedReplies, analyzeConsultationIntent, analyzeImage, generateImageBasedReplies, type SuggestedReply, type EnhancedSuggestionRequest } from "@/server/llm/service"
 import { searchMedicalFacilities, type MedicalFacility } from "@/server/services/medical"
 
 interface SessionUser {
@@ -260,6 +260,8 @@ export async function appendMessage(params: {
 
   await ensureConversationAccess(params.user, conversation)
 
+  console.log(`[appendMessage] Creating message with contentUrl: ${params.contentUrl || 'undefined'}`)
+
   const message = await prisma.$transaction(async (tx) => {
     const created = await tx.message.create({
       data: {
@@ -303,6 +305,7 @@ export async function appendMessage(params: {
     : (params.user as SessionUser & { locale?: string }).locale
 
   // すべてのメッセージでAI返信を生成（会話履歴とユーザー情報を参照）
+  console.log(`[appendMessage] Calling enrichMessageInBackground with contentUrl: ${message.contentUrl ?? 'null'}`)
   void enrichMessageInBackground(
     message.id,
     params.conversationId,
@@ -311,7 +314,8 @@ export async function appendMessage(params: {
     targetLanguage,
     conversation.worker.locale ?? undefined,
     managerLocale,
-    params.user.role
+    params.user.role,
+    message.contentUrl ?? undefined
   )
 
   void regenerateConversationSegmentsInBackground(params.conversationId)
@@ -334,6 +338,7 @@ async function handleHealthConsultationFlow(
   conversationHistory?: Array<{
     body: string
     senderRole: string
+    createdAt?: Date | string
   }>,
 ) {
   console.log(`[health-consultation] Starting flow for conversation ${conversationId}, current state: ${currentState || 'none'}`)
@@ -346,7 +351,7 @@ async function handleHealthConsultationFlow(
       where: { id: conversationId },
       data: {
         healthConsultationState: null,
-        healthConsultationData: null,
+        healthConsultationData: Prisma.JsonNull,
       },
     })
     currentState = null
@@ -439,7 +444,7 @@ async function handleHealthConsultationFlow(
       where: { id: conversationId },
       data: {
         healthConsultationState: "WAITING_FOR_INTENT",
-        healthConsultationData: healthAnalysis as Prisma.InputJsonValue,
+        healthConsultationData: healthAnalysis as unknown as Prisma.InputJsonValue,
       },
     })
 
@@ -474,7 +479,11 @@ async function handleHealthConsultationFlow(
     try {
       const updatedHealthAnalysis = await analyzeHealthConsultation({
         conversationHistory: [
-          ...conversationHistory,
+          ...(conversationHistory?.map(msg => ({
+            body: msg.body,
+            senderRole: msg.senderRole,
+            createdAt: msg.createdAt || new Date(),
+          })) || []),
           {
             body: symptomDetails,
             senderRole: "MEMBER",
@@ -496,7 +505,7 @@ async function handleHealthConsultationFlow(
             ...storedData,
             symptomDetails,
             updatedHealthAnalysis,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       })
 
@@ -544,7 +553,7 @@ async function handleHealthConsultationFlow(
           healthConsultationData: {
             ...storedData,
             symptomDetails,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       })
 
@@ -599,7 +608,7 @@ async function handleHealthConsultationFlow(
           healthConsultationData: {
             ...healthAnalysis,
             intentAnalysis,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       })
 
@@ -661,7 +670,7 @@ async function handleHealthConsultationFlow(
           healthConsultationData: {
             ...healthAnalysis,
             intentAnalysis,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       })
 
@@ -918,7 +927,7 @@ async function handleHealthConsultationFlow(
             healthConsultationData: {
               ...healthAnalysis,
               facilities: facilities.slice(0, 3),
-            } as Prisma.InputJsonValue,
+            } as unknown as Prisma.InputJsonValue,
           },
         })
 
@@ -1128,9 +1137,11 @@ async function enrichMessageInBackground(
   workerLocale?: string,
   managerLocale?: string,
   senderRole?: UserRole,
+  contentUrl?: string,
 ) {
   try {
     console.log(`[background] Starting LLM enrichment for message ${messageId}`)
+    console.log(`[background] Parameters - contentUrl: ${contentUrl ? contentUrl : 'undefined'}, content: "${content.substring(0, 50)}..."`)
     const startTime = Date.now()
 
     // 会話履歴とworker情報を取得
@@ -1171,6 +1182,23 @@ async function enrichMessageInBackground(
     if (!conversation) {
       console.log(`[background] Conversation ${conversationId} not found`)
       return
+    }
+
+    // 画像が含まれている場合、画像解析を実行
+    let imageAnalysis = null
+    if (contentUrl) {
+      console.log(`[background] Image detected in message ${messageId}: ${contentUrl}`)
+      imageAnalysis = await analyzeImage({
+        imageUrl: contentUrl,
+        userMessage: content,
+        workerLocale: conversation.worker.locale ?? undefined,
+      })
+
+      if (imageAnalysis) {
+        console.log(`[background] Image analysis completed:`, imageAnalysis)
+      } else {
+        console.log(`[background] Image analysis failed or not available`)
+      }
     }
 
     // メッセージを時系列順に並べ替え
@@ -1332,41 +1360,56 @@ async function enrichMessageInBackground(
       console.log("[background] Health consultation detected - will skip AI suggestions")
     }
 
-    // フェーズ3: AI提案生成（健康相談中はスキップ）
+    // フェーズ3: AI提案生成（健康相談中はスキップ、画像がある場合は画像ベースの提案を生成）
     console.log(`[background] Phase 3: AI suggestion generation for message ${messageId}`)
     const suggestionStartTime = Date.now()
 
     let suggestions: SuggestedReply[] = []
     if (!healthConsultationInProgress) {
       try {
-        suggestions = await generateSuggestedReplies({
-          conversationHistory: sortedMessages.map((msg) => ({
-            body: msg.body,
-            senderRole: msg.sender.role,
-            createdAt: msg.createdAt,
-          })),
-          workerInfo: {
-            name: conversation.worker.name,
-            locale: conversation.worker.locale,
-            countryOfOrigin: conversation.worker.countryOfOrigin,
-            dateOfBirth: conversation.worker.dateOfBirth,
-            gender: conversation.worker.gender,
-            address: conversation.worker.address,
-            phoneNumber: conversation.worker.phoneNumber,
-            jobDescription: conversation.worker.jobDescription,
-            hireDate: conversation.worker.hireDate,
-            notes: conversation.worker.notes,
-          },
-          groupInfo: {
-            name: conversation.group.name,
-            phoneNumber: conversation.group.phoneNumber,
-            address: conversation.group.address,
-          },
-          language: managerLocale || "ja",
-          persona: "manager",
-          targetTranslationLanguage: workerLocale !== managerLocale ? workerLocale : undefined,
-          daysSinceLastWorkerMessage,
-        } as EnhancedSuggestionRequest)
+        // 画像がある場合は画像ベースの提案を生成
+        if (imageAnalysis) {
+          console.log(`[background] Generating image-based suggestions`)
+          suggestions = await generateImageBasedReplies({
+            imageAnalysis,
+            userMessage: content,
+            workerInfo: {
+              name: conversation.worker.name,
+              locale: conversation.worker.locale,
+            },
+            managerLocale: managerLocale || "ja",
+          })
+        } else {
+          // 通常の提案生成
+          suggestions = await generateSuggestedReplies({
+            conversationHistory: sortedMessages.map((msg) => ({
+              body: msg.body,
+              senderRole: msg.sender.role,
+              createdAt: msg.createdAt,
+            })),
+            workerInfo: {
+              name: conversation.worker.name,
+              locale: conversation.worker.locale,
+              countryOfOrigin: conversation.worker.countryOfOrigin,
+              dateOfBirth: conversation.worker.dateOfBirth,
+              gender: conversation.worker.gender,
+              address: conversation.worker.address,
+              phoneNumber: conversation.worker.phoneNumber,
+              jobDescription: conversation.worker.jobDescription,
+              hireDate: conversation.worker.hireDate,
+              notes: conversation.worker.notes,
+            },
+            groupInfo: {
+              name: conversation.group.name,
+              phoneNumber: conversation.group.phoneNumber,
+              address: conversation.group.address,
+            },
+            language: managerLocale || "ja",
+            persona: "manager",
+            targetTranslationLanguage: workerLocale !== managerLocale ? workerLocale : undefined,
+            daysSinceLastWorkerMessage,
+          } as EnhancedSuggestionRequest)
+        }
 
         const suggestionDuration = Date.now() - suggestionStartTime
         console.log(`[background] Phase 3 completed: AI suggestions in ${suggestionDuration}ms`)
@@ -1378,8 +1421,8 @@ async function enrichMessageInBackground(
       console.log("[background] Phase 3 skipped: Health consultation in progress")
     }
 
-    // フェーズ4: 提案と健康分析の結果を最終更新
-    console.log(`[background] Phase 4: Final update with suggestions and health analysis`)
+    // フェーズ4: 提案と健康分析、画像解析の結果を最終更新
+    console.log(`[background] Phase 4: Final update with suggestions, health analysis, and image analysis`)
     const extraData: Record<string, unknown> = {
       provider: translation?.provider,
       model: translation?.model,
@@ -1388,6 +1431,10 @@ async function enrichMessageInBackground(
 
     if (healthAnalysis && healthAnalysis.isHealthRelated) {
       extraData.healthAnalysis = healthAnalysis
+    }
+
+    if (imageAnalysis) {
+      extraData.imageAnalysis = imageAnalysis
     }
 
     await prisma.messageLLMArtifact.upsert({
