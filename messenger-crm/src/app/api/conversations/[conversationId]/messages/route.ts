@@ -12,6 +12,7 @@ const postSchema = z.object({
   body: z.string().min(1),
   language: z.string().min(1),
   type: z.nativeEnum(MessageType).optional(),
+  contentUrl: z.string().optional(),
 })
 
 type RouteParams = {
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       body: parsed.data.body,
       language: parsed.data.language,
       type: parsed.data.type,
+      contentUrl: parsed.data.contentUrl,
     })
 
     console.log(`[API] Message created successfully. ID: ${message.id}, Has llmArtifact: ${!!message.llmArtifact}`)

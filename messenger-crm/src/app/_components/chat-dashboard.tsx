@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Bot, ExternalLink, MessageSquare, Settings, X } from "lucide-react"
+import { Bot, ExternalLink, MessageSquare, Settings, X, Paperclip, Image as ImageIcon } from "lucide-react"
 
 import { getSocket } from "@/lib/socket"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -32,6 +32,7 @@ type MessageItem = {
   body: string
   language: string
   type: "TEXT" | "IMAGE" | "FILE" | "SYSTEM"
+  contentUrl?: string | null
   createdAt: string
   metadata?: {
     type?: string
@@ -237,6 +238,9 @@ function ManagerChatDashboard({
   const [composer, setComposer] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [selectedImage, setSelectedImage] = useState<File | null>(null)
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState<{
     text: string
     index: number
@@ -485,9 +489,45 @@ function ManagerChatDashboard({
     return buildConversationTags(selectedConversation, removedForSelected, customForSelected)
   }, [selectedConversation, selectedConversationId, removedTags, customTags])
 
+  // 画像選択ハンドラー
+  function handleImageSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    // ファイルサイズチェック（10MB）
+    if (file.size > 10 * 1024 * 1024) {
+      setSendError("ファイルサイズが大きすぎます（最大10MB）")
+      return
+    }
+
+    // ファイルタイプチェック
+    if (!file.type.startsWith("image/")) {
+      setSendError("画像ファイルのみアップロード可能です")
+      return
+    }
+
+    setSelectedImage(file)
+    setSendError(null)
+
+    // プレビュー用のURLを作成
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      setImagePreviewUrl(e.target?.result as string)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  // 画像選択をクリア
+  function handleClearImage() {
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    setSendError(null)
+  }
+
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedConversationId || !composer.trim()) {
+    // テキストまたは画像のいずれかが必要
+    if (!selectedConversationId || (!composer.trim() && !selectedImage)) {
       return
     }
 
@@ -538,6 +578,38 @@ function ManagerChatDashboard({
     setSending(true)
     setSendError(null)
 
+    let uploadedImageUrl: string | null = null
+
+    // 画像がある場合は先にアップロード
+    if (selectedImage) {
+      setUploadingImage(true)
+      try {
+        const formData = new FormData()
+        formData.append("file", selectedImage)
+
+        const uploadRes = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        })
+
+        if (!uploadRes.ok) {
+          const errorData = await uploadRes.json().catch(() => ({}))
+          throw new Error(errorData.error ?? "画像のアップロードに失敗しました")
+        }
+
+        const uploadData = await uploadRes.json() as { url: string }
+        uploadedImageUrl = uploadData.url
+      } catch (error) {
+        console.error("Failed to upload image:", error)
+        setSendError(error instanceof Error ? error.message : "画像のアップロードに失敗しました")
+        setSending(false)
+        setUploadingImage(false)
+        return
+      } finally {
+        setUploadingImage(false)
+      }
+    }
+
     // 楽観的UI更新：送信前に即座にメッセージを表示
     const optimisticMessage = {
       id: `temp-${Date.now()}`,
@@ -545,8 +617,8 @@ function ManagerChatDashboard({
       senderId: currentUser.id,
       body: composer.trim(),
       language: currentUser.role === "MEMBER" ? "vi" : "ja",
-      type: "TEXT" as const,
-      contentUrl: null,
+      type: uploadedImageUrl ? ("IMAGE" as const) : ("TEXT" as const),
+      contentUrl: uploadedImageUrl,
       metadata: null,
       createdAt: new Date().toISOString(),
       sender: {
@@ -562,6 +634,8 @@ function ManagerChatDashboard({
     setMessages((current) => [...current, optimisticMessage])
     setComposer("")
     setSelectedSuggestion(null)
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
 
     try {
       const res = await fetch(`/api/conversations/${selectedConversationId}/messages`, {
@@ -570,8 +644,10 @@ function ManagerChatDashboard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          body: messageToSend,
+          body: messageToSend || "(画像)",
           language: currentUser.role === "MEMBER" ? "vi" : "ja",
+          type: uploadedImageUrl ? "IMAGE" : "TEXT",
+          contentUrl: uploadedImageUrl,
         }),
       })
 
@@ -1031,6 +1107,11 @@ function ManagerChatDashboard({
             checkingCompliance={checkingCompliance}
             showNewMessageAlert={showNewMessageAlert}
             onScrollToBottom={scrollToBottom}
+            imagePreviewUrl={imagePreviewUrl}
+            selectedImage={selectedImage}
+            uploadingImage={uploadingImage}
+            onImageSelect={handleImageSelect}
+            onClearImage={handleClearImage}
           />
         </div>
 
@@ -1137,6 +1218,9 @@ function WorkerChatDashboard({
   const [composer, setComposer] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [selectedImage, setSelectedImage] = useState<File | null>(null)
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [mobileView, setMobileView] = useState<"list" | "chat">("list")
   const [showNewMessageAlert, setShowNewMessageAlert] = useState(false)
@@ -1500,9 +1584,45 @@ function WorkerChatDashboard({
     }
   }
 
+  // 画像選択ハンドラー
+  function handleImageSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    // ファイルサイズチェック（10MB）
+    if (file.size > 10 * 1024 * 1024) {
+      setSendError("ファイルサイズが大きすぎます（最大10MB）")
+      return
+    }
+
+    // ファイルタイプチェック
+    if (!file.type.startsWith("image/")) {
+      setSendError("画像ファイルのみアップロード可能です")
+      return
+    }
+
+    setSelectedImage(file)
+    setSendError(null)
+
+    // プレビュー用のURLを作成
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      setImagePreviewUrl(e.target?.result as string)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  // 画像選択をクリア
+  function handleClearImage() {
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    setSendError(null)
+  }
+
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedConversationId || !composer.trim()) {
+    // テキストまたは画像のいずれかが必要
+    if (!selectedConversationId || (!composer.trim() && !selectedImage)) {
       return
     }
 
@@ -1520,6 +1640,39 @@ function WorkerChatDashboard({
 
     setSending(true)
     setSendError(null)
+
+    let uploadedImageUrl: string | null = null
+
+    // 画像がある場合は先にアップロード
+    if (selectedImage) {
+      setUploadingImage(true)
+      try {
+        const formData = new FormData()
+        formData.append("file", selectedImage)
+
+        const uploadRes = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        })
+
+        if (!uploadRes.ok) {
+          const errorData = await uploadRes.json().catch(() => ({}))
+          throw new Error(errorData.error ?? "画像のアップロードに失敗しました")
+        }
+
+        const uploadData = await uploadRes.json() as { url: string }
+        uploadedImageUrl = uploadData.url
+      } catch (error) {
+        console.error("Failed to upload image:", error)
+        setSendError(error instanceof Error ? error.message : "画像のアップロードに失敗しました")
+        setSending(false)
+        setUploadingImage(false)
+        return
+      } finally {
+        setUploadingImage(false)
+      }
+    }
+
     try {
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
@@ -1527,8 +1680,10 @@ function WorkerChatDashboard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          body: composer.trim(),
+          body: composer.trim() || "(画像)",
           language: currentUser.locale || "vi",
+          type: uploadedImageUrl ? "IMAGE" : "TEXT",
+          contentUrl: uploadedImageUrl,
         }),
       })
 
@@ -1546,6 +1701,8 @@ function WorkerChatDashboard({
         return [...current, data.message]
       })
       setComposer("")
+      setSelectedImage(null)
+      setImagePreviewUrl(null)
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === conversationId
@@ -1715,6 +1872,11 @@ function WorkerChatDashboard({
             currentUser={currentUser}
             showNewMessageAlert={showNewMessageAlert}
             onScrollToBottom={scrollToBottom}
+            imagePreviewUrl={imagePreviewUrl}
+            selectedImage={selectedImage}
+            uploadingImage={uploadingImage}
+            onImageSelect={handleImageSelect}
+            onClearImage={handleClearImage}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center bg-slate-50">
@@ -1762,6 +1924,11 @@ type ChatViewProps = {
   checkingCompliance?: boolean
   showNewMessageAlert?: boolean
   onScrollToBottom?: () => void
+  imagePreviewUrl?: string | null
+  selectedImage?: File | null
+  uploadingImage?: boolean
+  onImageSelect?: (event: React.ChangeEvent<HTMLInputElement>) => void
+  onClearImage?: () => void
 }
 
 function ChatView({
@@ -1786,6 +1953,11 @@ function ChatView({
   checkingCompliance,
   showNewMessageAlert,
   onScrollToBottom,
+  imagePreviewUrl,
+  selectedImage,
+  uploadingImage,
+  onImageSelect,
+  onClearImage,
 }: ChatViewProps) {
   const internalMessagesRef = useRef<HTMLDivElement | null>(null)
   const mergedRef = messagesRef ?? internalMessagesRef
@@ -2042,13 +2214,33 @@ function ChatView({
                         }`}
                       >
                         <div className="space-y-3">
-                          <p
-                            className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
-                              isOwnMessage ? "text-white" : "text-slate-800"
-                            }`}
-                          >
-                            {linkifyText(message.body)}
-                          </p>
+                          {message.type === "IMAGE" && message.contentUrl ? (
+                            <div className="space-y-2">
+                              <img
+                                src={message.contentUrl}
+                                alt="添付画像"
+                                className="max-w-full rounded-lg"
+                                style={{ maxHeight: "300px" }}
+                              />
+                              {message.body && message.body !== "(画像)" && (
+                                <p
+                                  className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
+                                    isOwnMessage ? "text-white" : "text-slate-800"
+                                  }`}
+                                >
+                                  {linkifyText(message.body)}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p
+                              className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
+                                isOwnMessage ? "text-white" : "text-slate-800"
+                              }`}
+                            >
+                              {linkifyText(message.body)}
+                            </p>
+                          )}
                           {translation ? (
                             <div
                               className={`border-t pt-3 text-sm leading-relaxed ${
@@ -2176,21 +2368,55 @@ function ChatView({
               </div>
             )}
             <form onSubmit={onSend} className="space-y-3" data-compliance-bypass={!!complianceAlert ? "false" : "true"} data-message-form="true">
+              {imagePreviewUrl && (
+                <div className="relative inline-block">
+                  <img
+                    src={imagePreviewUrl}
+                    alt="プレビュー"
+                    className="max-h-32 rounded border"
+                  />
+                  <button
+                    type="button"
+                    onClick={onClearImage}
+                    className="absolute -top-2 -right-2 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
               <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end">
-                <Textarea
-                  placeholder={messagePlaceholder}
-                  value={composer}
-                  onChange={(event) => onComposerChange(event.target.value)}
-                  rows={3}
-                  ref={textareaRef}
-                  className="flex-1 min-w-0"
-                />
+                <div className="flex flex-1 flex-col gap-2">
+                  <Textarea
+                    placeholder={messagePlaceholder}
+                    value={composer}
+                    onChange={(event) => onComposerChange(event.target.value)}
+                    rows={3}
+                    ref={textareaRef}
+                    className="flex-1 min-w-0"
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={onImageSelect}
+                      className="hidden"
+                      id="image-upload"
+                    />
+                    <label
+                      htmlFor="image-upload"
+                      className="flex items-center gap-1 cursor-pointer text-sm text-muted-foreground hover:text-foreground"
+                    >
+                      <Paperclip className="h-4 w-4" />
+                      画像を添付
+                    </label>
+                  </div>
+                </div>
                 <Button
                   type="submit"
-                  disabled={sending || checkingCompliance || !composer.trim()}
+                  disabled={sending || uploadingImage || checkingCompliance || (!composer.trim() && !selectedImage)}
                   className="w-full shrink-0 sm:w-28"
                 >
-                  {checkingCompliance ? "確認中..." : sending ? "送信中..." : "送信"}
+                  {uploadingImage ? "アップロード中..." : checkingCompliance ? "確認中..." : sending ? "送信中..." : "送信"}
                 </Button>
               </div>
               {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}

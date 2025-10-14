@@ -244,6 +244,7 @@ export async function appendMessage(params: {
   body: string
   language: string
   type?: MessageType
+  contentUrl?: string
 }) {
   const conversation = await prisma.conversation.findUnique({
     where: { id: params.conversationId },
@@ -267,6 +268,7 @@ export async function appendMessage(params: {
         body: params.body,
         language: params.language,
         type: params.type ?? MessageType.TEXT,
+        contentUrl: params.contentUrl,
       },
     })
 
