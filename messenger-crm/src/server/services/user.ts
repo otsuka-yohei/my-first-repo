@@ -37,9 +37,34 @@ export async function updateUserProfile(
   targetUserId: string,
   updates: UpdateUserProfileParams,
 ) {
-  // 権限チェック: 自分自身または管理者のみ更新可能
-  if (user.id !== targetUserId && user.role !== UserRole.SYSTEM_ADMIN) {
-    throw new AuthorizationError("他のユーザーのプロフィールは更新できません。")
+  // 権限チェック
+  // 1. 自分自身のプロフィールは常に更新可能
+  // 2. SYSTEM_ADMINは全員のプロフィールを更新可能
+  // 3. MANAGER/AREA_MANAGERは、自分が管理するグループのメンバーのプロフィールを更新可能
+  if (user.id !== targetUserId) {
+    if (user.role === UserRole.SYSTEM_ADMIN) {
+      // SYSTEM_ADMINは全員のプロフィールを更新可能
+    } else if (user.role === UserRole.MANAGER || user.role === UserRole.AREA_MANAGER) {
+      // マネージャーの場合、対象ユーザーが同じグループに所属しているか確認
+      const userMemberships = await prisma.groupMembership.findMany({
+        where: { userId: user.id },
+        select: { groupId: true },
+      })
+      const managerGroupIds = userMemberships.map((m) => m.groupId)
+
+      const targetMemberships = await prisma.groupMembership.findMany({
+        where: { userId: targetUserId },
+        select: { groupId: true },
+      })
+      const targetGroupIds = targetMemberships.map((m) => m.groupId)
+
+      const hasCommonGroup = managerGroupIds.some((gid) => targetGroupIds.includes(gid))
+      if (!hasCommonGroup) {
+        throw new AuthorizationError("このユーザーのプロフィールを更新する権限がありません。")
+      }
+    } else {
+      throw new AuthorizationError("他のユーザーのプロフィールは更新できません。")
+    }
   }
 
   // バリデーション

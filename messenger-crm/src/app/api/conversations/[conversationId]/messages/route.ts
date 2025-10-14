@@ -7,12 +7,13 @@ import {
   appendMessage,
   getConversationWithMessages,
 } from "@/server/services/conversation"
+import { isAppError, formatErrorResponse, logError } from "@/server/errors"
 
 const postSchema = z.object({
   body: z.string().min(1),
   language: z.string().min(1),
   type: z.nativeEnum(MessageType).optional(),
-  contentUrl: z.string().optional(),
+  contentUrl: z.string().optional().nullable(),
 })
 
 type RouteParams = {
@@ -39,33 +40,12 @@ export async function GET(_: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ conversation })
   } catch (error) {
-    console.error("Failed to load conversation:", {
-      conversationId,
-      userId: session.user.id,
-      userRole: session.user.role,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    })
+    logError(error, `GET /conversations/${conversationId}/messages`)
 
-    // エラーの種類に応じて適切なステータスコードとメッセージを返す
-    if (error instanceof Error) {
-      if (error.message === "Conversation not found") {
-        return NextResponse.json(
-          { error: "会話が見つかりませんでした" },
-          { status: 404 }
-        )
-      }
-      if (error.message.includes("権限がありません") || error.message.includes("閲覧できません")) {
-        return NextResponse.json(
-          { error: error.message },
-          { status: 403 }
-        )
-      }
-    }
-
+    const errorResponse = formatErrorResponse(error)
     return NextResponse.json(
-      { error: "会話の読み込みに失敗しました" },
-      { status: 500 }
+      { error: errorResponse.error },
+      { status: errorResponse.statusCode }
     )
   }
 }
@@ -82,11 +62,19 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   const parsed = postSchema.safeParse(json)
 
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid payload" }, { status: 400 })
+    console.error("[API] Validation failed:", {
+      conversationId,
+      receivedData: json,
+      errors: parsed.error.errors,
+    })
+    return NextResponse.json({
+      error: "Invalid payload",
+      details: parsed.error.errors
+    }, { status: 400 })
   }
 
   try {
-    console.log(`[API] POST /conversations/${conversationId}/messages - User: ${session.user.id}, Body length: ${parsed.data.body.length}`)
+    console.log(`[API] POST /conversations/${conversationId}/messages - User: ${session.user.id}, Body length: ${parsed.data.body.length}, ContentUrl: ${parsed.data.contentUrl || 'none'}`)
 
     const message = await appendMessage({
       conversationId,
@@ -110,7 +98,12 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ message })
   } catch (error) {
-    console.error("Failed to append message", error)
-    return NextResponse.json({ error: "Unable to send message" }, { status: 500 })
+    logError(error, `POST /conversations/${conversationId}/messages`)
+
+    const errorResponse = formatErrorResponse(error)
+    return NextResponse.json(
+      { error: errorResponse.error },
+      { status: errorResponse.statusCode }
+    )
   }
 }

@@ -24,178 +24,38 @@ import {
 import { AppSidebar } from "./app-sidebar"
 import { MedicalFacilitiesList, type MedicalFacility } from "./medical-facility-card"
 import type { CasePriority, CaseStatus } from "@prisma/client"
-
-type UserRole = "MEMBER" | "MANAGER" | "AREA_MANAGER" | "SYSTEM_ADMIN"
-
-type MessageItem = {
-  id: string
-  body: string
-  language: string
-  type: "TEXT" | "IMAGE" | "FILE" | "SYSTEM"
-  contentUrl?: string | null
-  createdAt: string
-  metadata?: {
-    type?: string
-    facilities?: MedicalFacility[]
-    healthConsultationState?: string
-    healthAnalysis?: {
-      isHealthRelated: boolean
-      symptomType?: string
-      urgency?: string
-      needsMedicalFacility?: boolean
-      suggestedQuestions?: string[]
-    }
-  } | null
-  sender: {
-    id: string
-    name: string | null
-    role: UserRole
-  }
-  llmArtifact?: {
-    translation?: string | null
-    translationLang?: string | null
-    suggestions?: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
-    extra?: {
-      healthAnalysis?: {
-        isHealthRelated: boolean
-        symptomType?: string
-        urgency?: string
-        needsMedicalFacility?: boolean
-        suggestedQuestions?: string[]
-      }
-      medicalFacilities?: MedicalFacility[]
-    }
-  } | null
-}
-
-type ConsultationCase = {
-  id: string
-  category: string
-  summary: string | null
-  description?: string | null
-  status: CaseStatus
-  priority: CasePriority
-}
-
-type ConversationSegment = {
-  id: string
-  title: string
-  summary: string | null
-  messageIds: string[]
-  startedAt: string
-  endedAt: string
-}
-
-type ConversationSummary = {
-  id: string
-  subject: string | null
-  status: string
-  updatedAt: string
-  group: {
-    id: string
-    name: string
-  }
-  worker?: {
-    id: string
-    name: string | null
-  } | null
-  lastMessage?: MessageItem | null
-  consultation?: ConsultationCase | null
-}
-
-type ConversationDetail = {
-  id: string
-  subject: string | null
-  status: string
-  updatedAt?: string
-  healthConsultationState?: string | null
-  group: { id: string; name: string }
-  worker: { id: string; name: string | null; locale: string | null; notes?: string | null }
-  consultation: (ConsultationCase & { description?: string | null }) | null
-}
-
-type GroupOption = {
-  id: string
-  name: string
-}
-
-type WorkerOption = {
-  id: string
-  name: string | null
-  email: string | null
-  groupIds: string[]
-}
-
-const DEFAULT_LANGUAGE = "ja"
+import { ConversationListItem } from "./chat/ConversationListItem"
+import { ManagerInsightsPanel } from "./chat/ManagerInsightsPanel"
+import { usePreferredLanguage } from "./chat/hooks"
+import {
+  extractUrls,
+  linkifyText,
+  getInitials,
+  getLocaleLabel,
+  formatRelativeTime,
+  buildConversationTags,
+  toIsoString,
+  getMessagePlaceholder,
+  splitSuggestionContent,
+  DEFAULT_LANGUAGE,
+} from "./chat/utils"
+import type {
+  UserRole,
+  MessageItem,
+  ConversationSummary,
+  ConversationDetail,
+  ConversationSegment,
+  ConsultationCase,
+  GroupOption,
+  WorkerOption,
+  ConversationTag,
+  ChatDashboardProps,
+} from "./chat/types"
 
 // URL検出用の正規表現
 const URL_REGEX = /(https?:\/\/[^\s]+)/g
 
-// URLを検出してリンク化する関数
-function extractUrls(text: string): string[] {
-  const matches = text.match(URL_REGEX)
-  return matches ? Array.from(new Set(matches)) : []
-}
-
-// テキストをURLでリンク化
-function linkifyText(text: string) {
-  const parts = text.split(URL_REGEX)
-  return parts.map((part, index) => {
-    if (part.match(URL_REGEX)) {
-      return (
-        <a
-          key={index}
-          href={part}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline decoration-1 underline-offset-2 hover:decoration-2"
-        >
-          {part}
-        </a>
-      )
-    }
-    return part
-  })
-}
-
-function usePreferredLanguage(defaultLanguage = DEFAULT_LANGUAGE) {
-  const [language, setLanguage] = useState(defaultLanguage)
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    const stored = window.localStorage.getItem("preferredLanguage")
-    if (stored) {
-      setLanguage(stored)
-    }
-  }, [defaultLanguage])
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    function handleStorage(event: StorageEvent) {
-      if (event.key === "preferredLanguage") {
-        setLanguage(event.newValue ?? defaultLanguage)
-      }
-    }
-    window.addEventListener("storage", handleStorage)
-    return () => window.removeEventListener("storage", handleStorage)
-  }, [defaultLanguage])
-
-  return language
-}
-
 type DashboardViewProps = ChatDashboardProps & { preferredLanguage: string }
-
-type ChatDashboardProps = {
-  initialConversations: ConversationSummary[]
-  availableGroups: GroupOption[]
-  availableWorkers: WorkerOption[]
-  currentUser: {
-    id: string
-    role: UserRole
-    name?: string | null
-    locale?: string | null
-  }
-}
 
 const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
   IN_PROGRESS: "対応中",
@@ -296,7 +156,7 @@ function ManagerChatDashboard({
         if (selectedConversationId && selectedConversationId.startsWith("placeholder-")) {
           const workerId = selectedConversationId.replace("placeholder-", "")
           const worker = workerDirectory[workerId]
-          if (!worker || !worker.groupIds[0]) {
+          if (!worker || !worker.groupIds || !worker.groupIds[0]) {
             throw new Error("Worker not found or has no group")
           }
 
@@ -876,7 +736,20 @@ function ManagerChatDashboard({
         body: JSON.stringify({ notes }),
       })
       if (!res.ok) {
-        throw new Error("Failed to save notes")
+        // サーバーからのエラーメッセージを取得
+        console.error("Failed to save notes - Status:", res.status, res.statusText)
+        const responseText = await res.text()
+        console.error("Response body:", responseText)
+
+        let errorData: { error?: string } = { error: "Unknown error" }
+        try {
+          errorData = JSON.parse(responseText)
+        } catch (e) {
+          console.error("Failed to parse error response as JSON:", e)
+        }
+
+        const errorMessage = errorData.error || `Failed to save notes (${res.status})`
+        throw new Error(errorMessage)
       }
       // 成功したら、selectedConversationを更新
       setSelectedConversation(prev => {
@@ -891,6 +764,8 @@ function ManagerChatDashboard({
       })
     } catch (error) {
       console.error("Failed to save notes", error)
+      // エラーをユーザーに通知（必要に応じてトーストなどを追加）
+      throw error
     } finally {
       setSavingNotes(false)
     }
@@ -986,7 +861,7 @@ function ManagerChatDashboard({
           if (!prev) return prev
           return {
             ...prev,
-            healthConsultationState: message.metadata.healthConsultationState!,
+            healthConsultationState: message.metadata?.healthConsultationState ?? null,
           }
         })
       }
@@ -1449,7 +1324,7 @@ function WorkerChatDashboard({
           if (!prev) return prev
           return {
             ...prev,
-            healthConsultationState: message.metadata.healthConsultationState!,
+            healthConsultationState: message.metadata?.healthConsultationState ?? null,
           }
         })
       }
@@ -1836,7 +1711,7 @@ function WorkerChatDashboard({
                     worker: {
                       id: currentUser.id,
                       name: selectedGroup.name,
-                      locale: currentUser.locale,
+                      locale: currentUser.locale ?? null,
                     },
                   }
                 : selectedConversationId?.startsWith("placeholder-")
@@ -2452,561 +2327,6 @@ async function readJson<T>(res: Response): Promise<T> {
   } catch (_error) {
     throw new Error("レスポンスの解析に失敗しました")
   }
-}
-
-type ManagerInsightsPanelProps = {
-  conversation: (ConversationDetail & { messages: MessageItem[] }) | null
-  consultation: ConsultationCase | (ConsultationCase & { description?: string | null }) | null
-  suggestions: Array<{ content: string; tone?: string; language?: string; translation?: string; translationLang?: string }>
-  onSelectSuggestion: (content: string, index: number) => void
-  onFocusComposer: () => void
-  onRegenerateSuggestions: () => void
-  regeneratingSuggestions: boolean
-  regenerateError: string | null
-  tags: ConversationTag[]
-  onRemoveTag: (tag: ConversationTag) => void
-  onAddTag: () => void
-  newTag: string
-  onNewTagChange: (value: string) => void
-  contact: WorkerOption | null
-  segments: ConversationSegment[]
-  preferredLanguage: string
-  workerNotes: string
-  onNotesChange: (value: string) => void
-  onSaveNotes: (notes: string) => void
-  savingNotes: boolean
-}
-
-function ManagerInsightsPanel({
-  conversation,
-  consultation,
-  suggestions,
-  onSelectSuggestion,
-  onFocusComposer,
-  onRegenerateSuggestions,
-  regeneratingSuggestions,
-  regenerateError,
-  tags,
-  onRemoveTag,
-  onAddTag,
-  newTag,
-  onNewTagChange,
-  contact,
-  segments,
-  preferredLanguage: _preferredLanguage,
-  workerNotes,
-  onNotesChange,
-  onSaveNotes,
-  savingNotes,
-}: ManagerInsightsPanelProps) {
-  const toneLabelMap: Record<string, string> = {
-    question: "質問",
-    empathy: "共感",
-    solution: "解決策",
-    summary: "要約",
-    "check-in": "チェックイン",
-    "gentle-follow-up": "フォローアップ",
-    continuation: "継続",
-    encouragement: "励まし",
-  }
-
-  const statusLabel = conversation
-    ? CASE_STATUS_LABEL[conversation.status as CaseStatus] ?? conversation.status
-    : null
-  const isOnline = conversation ? conversation.status === "IN_PROGRESS" : false
-  const contactEmail = contact?.email ?? "未登録"
-  const contactPhone = "未登録"
-  const contactAddress = conversation ? conversation.group.name : "未登録"
-  const artifact = consultation?.llmArtifact
-
-  return (
-    <aside className="hidden h-full min-h-0 w-full overflow-hidden border-l bg-[#f5f7ff] px-5 py-6 md:flex md:resize-x" style={{ minWidth: '320px', maxWidth: '80vw' }}>
-      <div className="flex h-full w-full flex-col gap-6 xl:flex-row">
-        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-slate-800">AI返信</h2>
-            {conversation && !(artifact?.extra && typeof artifact.extra === 'object' && 'healthConsultationInProgress' in artifact.extra && artifact.extra.healthConsultationInProgress) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1"
-                type="button"
-                onClick={onRegenerateSuggestions}
-                disabled={regeneratingSuggestions}
-                aria-busy={regeneratingSuggestions}
-              >
-                <Bot className="h-4 w-4" />
-                {regeneratingSuggestions ? "生成中..." : suggestions.length === 0 ? "生成" : "再生成"}
-              </Button>
-            ) : null}
-          </div>
-          <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
-            {suggestions.length === 0 ? (
-              <div className="text-center py-8">
-                {artifact?.extra && typeof artifact.extra === 'object' && 'healthConsultationInProgress' in artifact.extra && artifact.extra.healthConsultationInProgress ? (
-                  <>
-                    <p className="text-xs text-muted-foreground mb-2">
-                      🏥 健康相談対応中
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      システムが自動で対応しています。
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      必要に応じてマネージャーからもメッセージを送信できます。
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground mb-4">
-                    {conversation ? "「生成」ボタンをクリックして初回メッセージを生成できます。" : "会話を選択してください。"}
-                  </p>
-                )}
-              </div>
-            ) : (
-              suggestions.map((suggestion, index) => {
-                const toneKey = suggestion.tone ? suggestion.tone.toLowerCase() : ""
-                const toneLabel = toneLabelMap[toneKey] ?? suggestion.tone ?? "提案"
-                const { primary, secondary } = splitSuggestionContent(suggestion.content)
-                return (
-                  <button
-                    key={`${suggestion.content}-${index}`}
-                    type="button"
-                    onClick={() => onSelectSuggestion(suggestion.content, index)}
-                    className="w-full text-left"
-                  >
-                    <Card className="border border-slate-200 shadow-sm transition hover:border-[#0F2C82]/40 hover:shadow-md">
-                      <CardContent className="space-y-2.5 px-4 py-3">
-                        <div className="flex items-center text-xs text-muted-foreground">
-                          <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
-                            {toneLabel}
-                          </Badge>
-                        </div>
-                        <div className="space-y-2.5 text-sm leading-relaxed text-slate-700">
-                          <p className="whitespace-pre-wrap">{primary}</p>
-                          {secondary ? (
-                            <div className="border-t border-slate-200 pt-2.5 text-slate-600">
-                              <p className="whitespace-pre-wrap text-xs sm:text-sm">{secondary}</p>
-                            </div>
-                          ) : null}
-                          {suggestion.translation ? (
-                            <div className="border-t border-slate-200 pt-2.5 text-slate-600">
-                              <p className="whitespace-pre-wrap text-xs leading-relaxed">{suggestion.translation}</p>
-                            </div>
-                          ) : null}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </button>
-                )
-              })
-            )}
-          </div>
-          {regenerateError ? <p className="mt-3 text-xs text-destructive">{regenerateError}</p> : null}
-          <div className="mt-4 space-y-3">
-            <Button type="button" variant="secondary" className="w-full" onClick={onFocusComposer}>
-              自分で入力する
-            </Button>
-            <p className="text-center text-xs text-muted-foreground">
-              AI返信を選択するか、自分で入力して返信を作成してください。
-            </p>
-          </div>
-        </section>
-
-        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-800">ユーザー情報</h2>
-        {conversation ? (
-          <div className="mt-4 space-y-5 overflow-y-auto text-sm text-slate-700">
-            <div className="flex items-center gap-3">
-              <Avatar className="h-12 w-12">
-                <AvatarFallback>{getInitials(conversation.worker.name)}</AvatarFallback>
-              </Avatar>
-              <div>
-                <p className="font-semibold">{conversation.worker.name ?? "相談者"}</p>
-                <p className="text-xs text-muted-foreground">
-                  {[conversation.worker.locale ? getLocaleLabel(conversation.worker.locale) : null, conversation.group.name]
-                    .filter(Boolean)
-                    .join(" ・ ")}
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs text-muted-foreground">
-              <p className="font-semibold text-slate-700">ステータス</p>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
-                <span
-                  className={`inline-flex h-2 w-2 rounded-full ${isOnline ? "bg-emerald-500" : "bg-slate-300"}`}
-                  aria-hidden
-                />
-                <span>{isOnline ? "オンライン" : "オフライン"}</span>
-                {statusLabel ? <Badge variant="outline">{statusLabel}</Badge> : null}
-                {consultation ? <Badge variant="secondary">{consultation.category}</Badge> : null}
-                {consultation?.priority === "HIGH" ? (
-                  <Badge className="bg-[#FF4D4F] text-white">緊急</Badge>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs text-muted-foreground">
-              <p className="font-semibold text-slate-700">相談タグ</p>
-              {tags.length ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {tags.map((tag) => (
-                    <span key={`detail-${tag.id}`} className="inline-flex items-center">
-                      <Badge
-                        variant={tag.tone === "urgent" ? "destructive" : "secondary"}
-                        className={
-                          tag.tone === "urgent"
-                            ? "bg-[#FF4D4F] text-white"
-                            : "bg-slate-100 text-slate-700"
-                        }
-                      >
-                        {tag.label}
-                        <button
-                          type="button"
-                          onClick={() => onRemoveTag(tag)}
-                          className={`ml-1 inline-flex items-center justify-center rounded-full p-0.5 ${
-                            tag.tone === "urgent" ? "hover:bg-white/20" : "hover:bg-slate-200"
-                          }`}
-                          aria-label={`${tag.label} を削除`}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">タグは現在ありません。</p>
-              )}
-              <form
-                className="flex flex-wrap gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  onAddTag()
-                }}
-              >
-                <Input
-                  value={newTag}
-                  onChange={(event) => onNewTagChange(event.target.value)}
-                  placeholder="タグを追加"
-                  className="h-9 flex-1 min-w-[140px]"
-                />
-                <Button type="submit" variant="outline" disabled={!newTag.trim()}>
-                  追加
-                </Button>
-              </form>
-            </div>
-
-            {consultation?.summary ? (
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p className="font-semibold text-slate-700">AI分析サマリー</p>
-                <p className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">{consultation.summary}</p>
-              </div>
-            ) : null}
-
-            {consultation?.description ? (
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p className="font-semibold text-slate-700">相談内容メモ</p>
-                <p className="rounded-xl border border-dashed border-slate-200 p-3 text-[12px] text-slate-600">
-                  {consultation.description}
-                </p>
-              </div>
-            ) : null}
-
-            {segments.length > 0 ? (
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p className="font-semibold text-slate-700">過去の話題リスト</p>
-                <div className="space-y-2">
-                  {segments.map((segment, index) => (
-                    <div
-                      key={segment.id}
-                      className="rounded-lg border border-slate-200 bg-slate-50 p-3 transition hover:bg-slate-100"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-xs font-semibold text-slate-800">
-                          {index + 1}. {segment.title}
-                        </p>
-                        <Badge variant="secondary" className="shrink-0 text-[10px]">
-                          {segment.messageIds.length}件
-                        </Badge>
-                      </div>
-                      {segment.summary ? (
-                        <p className="mt-1 text-[11px] text-slate-600">{segment.summary}</p>
-                      ) : null}
-                      <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          <span className="inline-block h-1 w-1 rounded-full bg-slate-400" />
-                          {new Date(segment.startedAt).toLocaleString("ja-JP", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                        <span>〜</span>
-                        <span className="inline-flex items-center gap-1">
-                          <span className="inline-block h-1 w-1 rounded-full bg-slate-400" />
-                          {new Date(segment.endedAt).toLocaleString("ja-JP", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="space-y-1 text-xs text-muted-foreground">
-              <p className="font-semibold text-slate-700">連絡先情報</p>
-              <div className="rounded-xl bg-slate-50 p-3 text-[12px] text-slate-600">
-                <p>電話: {contactPhone}</p>
-                <p>メール: {contactEmail}</p>
-                <p>住所: {contactAddress}</p>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs text-muted-foreground">
-              <p className="font-semibold text-slate-700">備考</p>
-              <Textarea
-                placeholder="個別面談の内容などを入力..."
-                className="min-h-[100px] text-sm"
-                value={workerNotes}
-                onChange={(e) => onNotesChange(e.target.value)}
-                onBlur={() => onSaveNotes(workerNotes)}
-                disabled={savingNotes}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                {savingNotes ? "保存中..." : "備考はAI返信のコンテキストとして使用されます。"}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-muted-foreground">
-            相談者を選択すると、AI返信と相談者情報がここに表示されます。
-          </div>
-        )}
-        </section>
-      </div>
-    </aside>
-  )
-}
-
-
-function splitSuggestionContent(content: string) {
-  const normalized = content.replace(/\r\n/g, "\n").trim()
-  if (!normalized) {
-    return { primary: "", secondary: "" }
-  }
-
-  const blocks = normalized.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean)
-  if (blocks.length >= 2) {
-    return { primary: blocks[0], secondary: blocks.slice(1).join("\n\n") }
-  }
-
-  const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean)
-  if (lines.length >= 2) {
-    return { primary: lines[0], secondary: lines.slice(1).join("\n") }
-  }
-
-  return { primary: normalized, secondary: "" }
-}
-
-const MESSAGE_PLACEHOLDERS: Record<string, string> = {
-  ja: "メッセージを書く",
-  vi: "Viết tin nhắn",
-  en: "Write a message",
-  id: "Tulis pesan",
-  tl: "Mag-type ng mensahe",
-  fil: "Mag-type ng mensahe",
-}
-
-function resolvePlaceholder(code: string | null | undefined) {
-  if (!code) return null
-  const normalized = code.toLowerCase()
-  if (normalized.startsWith("vi")) return MESSAGE_PLACEHOLDERS.vi
-  if (normalized.startsWith("en")) return MESSAGE_PLACEHOLDERS.en
-  if (normalized.startsWith("id")) return MESSAGE_PLACEHOLDERS.id
-  if (normalized.startsWith("tl") || normalized.startsWith("fil")) return MESSAGE_PLACEHOLDERS.tl
-  if (normalized.startsWith("ja")) return MESSAGE_PLACEHOLDERS.ja
-  return null
-}
-
-function getMessagePlaceholder(preferredLanguage: string, fallback?: string | null) {
-  return (
-    resolvePlaceholder(preferredLanguage) ??
-    resolvePlaceholder(fallback) ??
-    MESSAGE_PLACEHOLDERS[DEFAULT_LANGUAGE]
-  )
-}
-
-type ConversationTag = {
-  id: string
-  label: string
-  tone?: "default" | "urgent"
-  kind: "auto" | "manual"
-}
-
-function buildConversationTags(
-  conversation: ConversationSummary | (ConversationDetail & { messages: MessageItem[] }),
-  removedIds: string[],
-  manualLabels: string[],
-): ConversationTag[] {
-  const excluded = new Set(removedIds)
-  const tags: ConversationTag[] = []
-  const seen = new Set<string>()
-
-  const pushTag = (tag: ConversationTag) => {
-    if (excluded.has(tag.id) || seen.has(tag.id)) {
-      return
-    }
-    seen.add(tag.id)
-    tags.push(tag)
-  }
-
-  if (conversation.group?.name) {
-    pushTag({ id: `group-${conversation.group.id}`, label: conversation.group.name, kind: "auto" })
-  }
-
-  const category = conversation.consultation?.category
-  if (category) {
-    pushTag({ id: `category-${category}`, label: category, kind: "auto" })
-  }
-
-  if (conversation.consultation?.priority === "HIGH") {
-    pushTag({ id: `${conversation.id}-urgent`, label: "緊急", tone: "urgent", kind: "auto" })
-  }
-
-  manualLabels.forEach((label) => {
-    const trimmed = label.trim()
-    if (!trimmed) return
-    const manualId = `manual-${trimmed.toLowerCase()}`
-    pushTag({ id: manualId, label: trimmed, kind: "manual" })
-  })
-
-  return tags
-}
-
-function ConversationListItem({
-  conversation,
-  tags,
-  isOnline,
-}: {
-  conversation: ConversationSummary
-  tags: ConversationTag[]
-  isOnline: boolean
-}) {
-  return (
-    <div className="flex items-start gap-3">
-      <Avatar className="h-10 w-10">
-        <AvatarFallback>{getInitials(conversation.worker?.name)}</AvatarFallback>
-      </Avatar>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold truncate">{conversation.worker?.name ?? "相談"}</p>
-            <p className="mt-1 line-clamp-1 text-xs text-muted-foreground break-words">
-              {conversation.lastMessage?.body ?? "まだメッセージがありません"}
-            </p>
-          </div>
-          <span className="shrink-0 text-xs text-muted-foreground">
-            {formatRelativeTime(conversation.updatedAt)}
-          </span>
-        </div>
-        <div className="mt-2 flex items-center gap-2">
-          <span
-            className={`inline-flex h-2 w-2 rounded-full ${
-              isOnline ? "bg-emerald-500" : "bg-slate-300"
-            }`}
-            aria-hidden
-          />
-          <div className="flex flex-wrap gap-2">
-            {tags.map((tag) => (
-              <Badge
-                key={tag.id}
-                variant={tag.tone === "urgent" ? "destructive" : "secondary"}
-                className={
-                  tag.tone === "urgent"
-                    ? "bg-[#FF4D4F] text-white"
-                    : "bg-slate-100 text-slate-700"
-                }
-              >
-                {tag.label}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function getInitials(name?: string | null) {
-  if (!name) return "--"
-  const parts = name.trim().split(/\s+/)
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase()
-  }
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-}
-
-function getLocaleLabel(locale: string) {
-  const normalized = locale.toLowerCase()
-  switch (normalized) {
-    case "ja":
-    case "ja-jp":
-      return "日本語"
-    case "vi":
-    case "vi-vn":
-      return "ベトナム語"
-    case "en":
-    case "en-us":
-      return "英語"
-    case "id":
-    case "id-id":
-      return "インドネシア語"
-    case "tl":
-    case "fil":
-      return "タガログ語"
-    default:
-      return locale
-  }
-}
-
-function toIsoString(value: unknown) {
-  if (!value) {
-    return new Date().toISOString()
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString()
-  }
-
-  if (typeof value === "string") {
-    return value
-  }
-
-  const parsed = new Date(value as string | number)
-  if (Number.isNaN(parsed.getTime())) {
-    return new Date().toISOString()
-  }
-  return parsed.toISOString()
-}
-
-function formatRelativeTime(isoString: string) {
-  const target = new Date(isoString)
-  const now = new Date()
-  const diffMs = now.getTime() - target.getTime()
-  const diffMinutes = Math.floor(diffMs / 60000)
-  if (diffMinutes < 1) return "たった今"
-  if (diffMinutes < 60) return `${diffMinutes}分前`
-  const diffHours = Math.floor(diffMinutes / 60)
-  if (diffHours < 24) return `${diffHours}時間前`
-  const diffDays = Math.floor(diffHours / 24)
-  if (diffDays < 7) return `${diffDays}日前`
-  return target.toLocaleDateString("ja-JP", { month: "long", day: "numeric" })
 }
 
 
